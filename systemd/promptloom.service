@@ -1,0 +1,13 @@
+[Unit]
+Description=Promptloom: capture and connect prompts from AI coding tools
+
+[Service]
+ExecStart=%h/.local/bin/promptloom watch
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=10
+Nice=10
+
+[Install]
+WantedBy=default.target

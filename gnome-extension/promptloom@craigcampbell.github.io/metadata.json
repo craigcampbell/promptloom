@@ -1,0 +1,7 @@
+{
+  "uuid": "promptloom@craigcampbell.github.io",
+  "name": "Promptloom",
+  "description": "Shows the active AI harness session in the top bar, with recent sessions, quick capture, and links into the promptloom app or an Obsidian vault.",
+  "shell-version": ["47", "48", "49", "50"],
+  "url": "https://github.com/craigcampbell/promptloom"
+}

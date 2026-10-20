@@ -1,0 +1,16 @@
+.promptloom-label {
+    margin-left: 6px;
+}
+
+.promptloom-entry {
+    width: 24em;
+}
+
+.promptloom-meta {
+    font-size: 0.85em;
+    opacity: 0.65;
+}
+
+.promptloom-active-title {
+    font-weight: bold;
+}

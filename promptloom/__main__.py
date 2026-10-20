@@ -1,0 +1,477 @@
+"""Command line entry point."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import traceback
+from pathlib import Path
+from urllib.parse import quote
+
+from . import __version__, config, extract
+from .engine import Loom
+from .vault import obsidian_problem
+
+# Graph view colours so sessions, projects, themes and harnesses read apart.
+GRAPH_GROUPS = [("Themes", 0xE5A50A), ("Projects", 0x33D17A), ("Harnesses", 0xC061CB),
+                ("Sessions", 0x62A0EA), ("Keywords", 0xF66151)]
+
+
+def open_uri(uri: str) -> None:
+    """Hand a URL to the desktop, on whichever system this is."""
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", uri])
+    elif sys.platform == "win32":
+        os.startfile(uri)  # noqa: S606 - a URL we built, not user input
+    else:
+        subprocess.Popen(["xdg-open", uri])
+
+
+def cmd_init(args) -> int:
+    created = config.write_default()
+    cfg = config.load()
+    print(f"config: {config.CONFIG_FILE}" + (" (created)" if created else ""))
+    if not cfg["vault"]:
+        print("Obsidian output is off; `promptloom ui` opens the built-in app. "
+              "Set vault in the config to also write an Obsidian vault.")
+        return 0
+    vault = Path(cfg["vault"])
+    (vault / cfg["folder"]).mkdir(parents=True, exist_ok=True)
+    graph = vault / ".obsidian" / "graph.json"
+    if not graph.exists():
+        graph.parent.mkdir(exist_ok=True)
+        groups = [{"query": f'path:"{cfg["folder"]}/{name}"', "color": {"a": 1, "rgb": rgb}}
+                  for name, rgb in GRAPH_GROUPS]
+        graph.write_text(json.dumps({"colorGroups": groups, "showTags": False}, indent=2))
+    print(f"vault:  {vault}")
+    if obsidian_problem(vault, cfg["folder"]):
+        print("Open that folder in Obsidian once (Open folder as vault) so links from the top bar work.")
+    return 0
+
+
+def cmd_sync(args) -> int:
+    loom = Loom()
+    if args.reenrich:
+        with loom.store.lock():
+            loom.store.load()
+            for record in loom.store.records.values():
+                record.enrich = {}
+                record.retry_at = 0
+            loom.store.save()
+    if args.no_enrich:
+        loom.backend = None
+        limit = 0
+    else:
+        limit = 10**6 if (args.all or args.reenrich) else 1
+
+    def progress(record):
+        print(f"  summarised: {record.title}  [{', '.join(record.themes)}]", flush=True)
+
+    result = loom.sync(enrich_limit=limit, force_enrich=limit > 1, progress=progress)
+    status = result["status"]
+    print(f"{status['sessions']} sessions, {result['changed']} changed, "
+          f"{result['enriched']} summarised, {status['summarising']} waiting for a summary")
+    if status["waiting"]:
+        print(f"summarising paused: {status['waiting']}")
+    for error in loom.errors:
+        print(f"warning: {error}", file=sys.stderr)
+    return 0
+
+
+def cmd_watch(args) -> int:
+    from . import server
+
+    loom = Loom()
+    stamp = _config_stamp()
+    print(f"promptloom {__version__} watching: "
+          f"{', '.join(h.name for h in loom.harnesses) or 'no harnesses'}", flush=True)
+    httpd = None
+    if loom.cfg.get("ui", {}).get("enabled", True):
+        httpd = server.start_thread(loom.cfg)
+        print(f"app: {loom.ui_url()}" if httpd else
+              f"app: port {loom.cfg['ui'].get('port', 8765)} is taken; not serving", flush=True)
+    for error in loom.errors:
+        print(f"warning: {error}", flush=True)
+    while True:
+        try:
+            if _config_stamp() != stamp:
+                stamp = _config_stamp()
+                loom = Loom()
+                if httpd:
+                    httpd.shutdown()
+                    httpd.server_close()
+                    httpd = server.start_thread(loom.cfg)
+                print("configuration reloaded", flush=True)
+            result = loom.sync(enrich_limit=1)
+            if result["enriched"] or result["insights"]:
+                print(f"summarised {result['enriched']}, insights={result['insights']}", flush=True)
+        except Exception:
+            traceback.print_exc()
+        time.sleep(loom.cfg.get("poll_seconds", 5))
+
+
+def _config_stamp() -> list:
+    stamps = []
+    paths = [config.CONFIG_FILE, config.PROVIDER_FILE]
+    if config.PLUGIN_DIR.is_dir():
+        paths += sorted(config.PLUGIN_DIR.glob("*.py"))
+    for path in paths:
+        try:
+            stamps.append((str(path), path.stat().st_mtime_ns))
+        except OSError:
+            pass
+    return stamps
+
+
+def cmd_status(args) -> int:
+    loom = Loom()
+    status = loom.read_status()
+    if args.json:
+        print(json.dumps(status, indent=2))
+        return 0
+    if not status:
+        print("No status yet. Run `promptloom sync` or start the daemon.")
+        return 1
+    active = status.get("active")
+    print(f"vault:    {status['vault']}")
+    print(f"sessions: {status['sessions']}   open action items: {status['open_actions']}   "
+          f"awaiting summary: {status['summarising']}")
+    if status.get("waiting"):
+        print(f"paused:   {status['waiting']}")
+    if status.get("vault_problem"):
+        print(f"obsidian: {status['vault_problem']}")
+    if active:
+        print(f"active:   {active['title']}  ({active['harness_label']}, {active['project']}, "
+              f"{active['session_id']})")
+    print("recent:")
+    for entry in status.get("recent", []):
+        print(f"  {extract.local(entry['updated'])}  {entry['harness_label']:<12} "
+              f"{entry['project']:<22} {entry['title']}")
+    return 0
+
+
+def cmd_capture(args) -> int:
+    text = " ".join(args.text).strip()
+    if not text:
+        text = sys.stdin.read().strip()
+    if not text:
+        print("nothing to capture", file=sys.stderr)
+        return 1
+    capture = Loom().capture(text, todo=args.todo, context=args.context or "")
+    print(("todo: " if capture["todo"] else "captured: ") + capture["text"])
+    return 0
+
+
+def cmd_insights(args) -> int:
+    loom = Loom()
+    with loom.store.lock():
+        loom.store.load()
+        if loom.write_insights(force=True):
+            loom.vault.render()
+            loom.store.save()
+            print(f"wrote {loom.vault.file(loom.vault.rel('Insights'))}")
+            return 0
+    print(loom.waiting or "Not enough summarised sessions yet (or no model backend).")
+    return 1
+
+
+def cmd_harnesses(args) -> int:
+    loom = Loom()
+    loom.store.load()
+    counts: dict[str, int] = {}
+    for record in loom.store.records.values():
+        if record.session.prompts:
+            counts[record.session.harness] = counts.get(record.session.harness, 0) + 1
+    for harness in loom.harnesses:
+        try:
+            files = len(list(harness.sources()))
+        except Exception as exc:
+            files = f"error: {exc}"
+        found = f"{files} source files" if files else "not found on this machine"
+        print(f"{harness.name:<14} {harness.label:<14} {found}, "
+              f"{counts.get(harness.name, 0)} sessions captured")
+    for error in loom.errors:
+        print(f"warning: {error}", file=sys.stderr)
+    return 0
+
+
+def cmd_provider(args) -> int:
+    from . import providers
+    from .enrich import EnrichError
+
+    stored = providers.load_file(config.PROVIDER_FILE)
+    keys = stored.setdefault("keys", {})
+    action = args.action or "show"
+
+    if action == "show":
+        cfg = config.load()["enrich"]
+        if cfg["backend"] == "api":
+            name = cfg["provider"]
+            print(f"summaries: {providers.label(name)} ({name}), model {cfg.get('model') or 'default'}")
+        else:
+            print(f"summaries: {cfg['backend']} (local settings in {config.CONFIG_FILE})")
+        for name in providers.names():
+            note = f"key {providers.mask(keys[name])}" if name in keys else "no key"
+            print(f"  {name:<11} {providers.label(name):<14} {note}")
+        print("Set one with: promptloom provider set NAME [--model MODEL]")
+        return 0
+
+    if action == "local":
+        for key in ("provider", "model", "base_url"):
+            stored.pop(key, None)
+        providers.save_file(config.PROVIDER_FILE, stored)
+        print("Summaries are back on the backend in config.toml. Stored keys were kept.")
+        return 0
+
+    name = args.name or stored.get("provider")
+    if not name:
+        print("Which provider? One of: " + ", ".join(providers.names()), file=sys.stderr)
+        return 1
+    if name not in providers.names():
+        print(f"Unknown provider '{name}'. One of: {', '.join(providers.names())}. "
+              "Use 'custom' with --base-url for any OpenAI-compatible API.", file=sys.stderr)
+        return 1
+
+    if action == "forget":
+        keys.pop(name, None)
+        if stored.get("provider") == name:
+            for key in ("provider", "model", "base_url"):
+                stored.pop(key, None)
+        providers.save_file(config.PROVIDER_FILE, stored)
+        print(f"Removed the {providers.label(name)} key.")
+        return 0
+
+    # set / models: both need a key
+    if args.key_stdin:
+        keys[name] = sys.stdin.readline().strip()
+    elif name not in keys or args.rekey:
+        import getpass
+
+        keys[name] = getpass.getpass(f"{providers.label(name)} API key (not shown): ").strip()
+    if not keys.get(name):
+        print("No key given.", file=sys.stderr)
+        return 1
+
+    same = stored.get("provider") == name
+    base_url = args.base_url or (stored.get("base_url", "") if same else "")
+    model = args.model or (stored.get("model", "") if same else "")
+    if name == "custom" and not base_url:
+        print("A custom provider needs --base-url (the URL ending in /v1).", file=sys.stderr)
+        return 1
+    if name == "anthropic" and not model:
+        model = providers.ANTHROPIC_DEFAULT_MODEL
+
+    cfg = config.load()
+    cfg["keys"] = keys
+    cfg["enrich"].update(backend="api", provider=name, model=model or "-", base_url=base_url)
+    try:
+        backend = providers.build(cfg)
+        if action == "models" or not model:
+            listing = backend.models()
+            # The key worked: keep it even though no model is chosen yet.
+            providers.save_file(config.PROVIDER_FILE, stored)
+            print("\n".join(listing))
+            if action == "set":
+                print(f"\nPick one: promptloom provider set {name} --model MODEL", file=sys.stderr)
+                return 1
+            return 0
+        if not args.no_test:
+            schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+            backend.complete('Reply with the JSON object {"ok": true}.', schema)
+    except EnrichError as exc:
+        print(f"Not saved: {exc}", file=sys.stderr)
+        return 1
+
+    stored.update(provider=name, model=model, base_url=base_url)
+    providers.save_file(config.PROVIDER_FILE, stored)
+    print(f"Summaries now use {providers.label(name)}, model {model}. "
+          f"Key stored in {config.PROVIDER_FILE} (readable only by you).")
+    print("Prompts from every harness will be sent to this provider to be summarised. "
+          "`promptloom provider local` switches back.")
+    return 0
+
+
+def cmd_open(args) -> int:
+    loom = Loom()
+    if not loom.vault.enabled:
+        print("Obsidian output is off (no vault in the config). `promptloom ui` opens the "
+              "built-in app.", file=sys.stderr)
+        return 1
+    status = loom.read_status()
+    target = status.get(args.what)
+    if not target:
+        print("No status yet. Run `promptloom sync` first.", file=sys.stderr)
+        return 1
+    problem = obsidian_problem(loom.vault.root, loom.vault.folder)
+    if problem:
+        print(problem, file=sys.stderr)
+        return 1
+    open_uri("obsidian://open?path=" + quote(target))
+    return 0
+
+
+def _ui_running(url: str) -> bool:
+    from urllib.request import urlopen
+
+    try:
+        with urlopen(url + "api/status", timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def cmd_ui(args) -> int:
+    """Open the built-in app, serving it here if the daemon is not."""
+    from . import server
+
+    cfg = config.load()
+    port = args.port or cfg.get("ui", {}).get("port", 8765)
+    url = f"http://127.0.0.1:{port}/" + (f"#/search?q={quote(args.query)}" if args.query else "")
+    base = f"http://127.0.0.1:{port}/"
+    if _ui_running(base):
+        if not args.no_open:
+            open_uri(url)
+        print(url)
+        return 0
+    httpd = server.serve(cfg, port=port)
+    print(f"serving {base} (Ctrl+C to stop)", flush=True)
+    if not args.no_open:
+        open_uri(url)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def cmd_log(args) -> int:
+    """Record a prompt from any tool, for the api harness to pick up."""
+    from .harnesses.api import harness_name
+    from .server import append_ingest
+
+    text = " ".join(args.text).strip() or sys.stdin.read().strip()
+    if not text:
+        print("nothing to log", file=sys.stderr)
+        return 1
+    item = {"harness": harness_name(args.harness), "prompt": text,
+            "context": str(Path(args.context or os.getcwd()).expanduser()),
+            "ts": extract.now_ts()}
+    for key in ("model", "session", "title", "branch"):
+        if getattr(args, key):
+            item[key] = getattr(args, key)
+    if args.reply:
+        item["reply"] = args.reply
+    append_ingest(config.STATE_DIR, [json.dumps(item, ensure_ascii=False)])
+    print(f"logged for {item['harness']} in {item['context']}")
+    return 0
+
+
+def cmd_search(args) -> int:
+    from . import analysis
+    from .store import Store
+    from .userdata import UserData
+
+    store, user = Store(config.STATE_DIR), UserData(config.STATE_DIR)
+    store.load()
+    user.load()
+    result = analysis.search(store.by_recency(), user, " ".join(args.query), args.limit)
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+    for hit in result["hits"]:
+        print(f"{extract.local(hit['ts'])}  {hit['project']:<18} {hit['model'] or '?':<20} "
+              f"{hit['title']}")
+        print(f"    {hit['text']}")
+    for note in result["notes"]:
+        print(f"note  {note['title']}: {note['text']}")
+    print(f"{result['total']} prompts, {len(result['notes'])} notes")
+    return 0
+
+
+def cmd_mcp(args) -> int:
+    from . import mcp
+
+    return mcp.run()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="promptloom", description=__doc__)
+    parser.add_argument("--version", action="version", version=__version__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("init", help="create the config file and vault folder").set_defaults(fn=cmd_init)
+
+    p = sub.add_parser("sync", help="capture new prompts and update the vault once")
+    p.add_argument("--all", action="store_true", help="summarise every pending session now")
+    p.add_argument("--no-enrich", action="store_true", help="skip model summaries")
+    p.add_argument("--reenrich", action="store_true", help="discard and redo all summaries")
+    p.set_defaults(fn=cmd_sync)
+
+    sub.add_parser("watch", help="run continuously (what the service does)").set_defaults(fn=cmd_watch)
+
+    p = sub.add_parser("status", help="show the active and recent sessions")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_status)
+
+    p = sub.add_parser("capture", help="save a note or to-do against the active session")
+    p.add_argument("text", nargs="*")
+    p.add_argument("--todo", action="store_true", help="record it as an action item")
+    p.add_argument("--context", help="attach to this directory instead of the active session")
+    p.set_defaults(fn=cmd_capture)
+
+    sub.add_parser("insights", help="rewrite Insights.md now").set_defaults(fn=cmd_insights)
+    sub.add_parser("harnesses", help="list configured harnesses").set_defaults(fn=cmd_harnesses)
+
+    p = sub.add_parser("provider", help="use a hosted model with your own API key")
+    p.add_argument("action", nargs="?", choices=["show", "set", "models", "local", "forget"])
+    p.add_argument("name", nargs="?", help="anthropic, openai, deepseek, openrouter, gemini, "
+                   "groq, mistral, xai, together or custom")
+    p.add_argument("--model")
+    p.add_argument("--base-url", help="for 'custom': any OpenAI-compatible API")
+    p.add_argument("--rekey", action="store_true", help="replace the stored key")
+    p.add_argument("--key-stdin", action="store_true", help="read the key from stdin")
+    p.add_argument("--no-test", action="store_true", help="save without a test request")
+    p.set_defaults(fn=cmd_provider)
+
+    p = sub.add_parser("ui", help="open the built-in app (search, notes, graph, timelines)")
+    p.add_argument("query", nargs="?", help="start with this search")
+    p.add_argument("--port", type=int)
+    p.add_argument("--no-open", action="store_true", help="serve without opening a browser")
+    p.set_defaults(fn=cmd_ui)
+
+    p = sub.add_parser("search", help="search every prompt and note")
+    p.add_argument("query", nargs="*", help='words, plus filters: model:opus project:shop '
+                   'harness:codex tag:bug theme:auth after:2026-01-01 before:2026-02-01')
+    p.add_argument("--limit", type=int, default=30)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_search)
+
+    p = sub.add_parser("log", help="record a prompt from any tool or script")
+    p.add_argument("text", nargs="*", help="the prompt (or on stdin)")
+    p.add_argument("--harness", default="cli", help="name of the tool it came from")
+    p.add_argument("--model")
+    p.add_argument("--context", help="project directory (default: the current one)")
+    p.add_argument("--session", help="group prompts into this session id")
+    p.add_argument("--title")
+    p.add_argument("--branch")
+    p.add_argument("--reply", help="the answer, if you have it")
+    p.set_defaults(fn=cmd_log)
+
+    sub.add_parser("mcp", help="MCP server on stdio, so assistants can search your "
+                   "prompt history").set_defaults(fn=cmd_mcp)
+
+    p = sub.add_parser("open", help="open a promptloom note in Obsidian")
+    p.add_argument("what", nargs="?", default="home",
+                   choices=["home", "actions", "insights", "inbox", "connections", "map"])
+    p.set_defaults(fn=cmd_open)
+
+    args = parser.parse_args(argv)
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
