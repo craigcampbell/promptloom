@@ -7,11 +7,16 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "== CLI"
+# pywebview gives `promptloom app` a native window on macOS and Windows (on
+# Linux it needs the system's PyGObject, so Chrome's app mode is used there).
+extras=(--with anthropic)
+case "$(uname -s)" in Darwin) extras+=(--with pywebview) ;; esac
 if command -v uv >/dev/null; then
-    uv tool install --force --with anthropic --editable "$here"
+    uv tool install --force "${extras[@]}" --editable "$here"
 elif command -v pipx >/dev/null; then
     pipx install --force --editable "$here"
     pipx inject promptloom anthropic
+    case "$(uname -s)" in Darwin) pipx inject promptloom pywebview ;; esac
 else
     echo "Install uv (https://docs.astral.sh/uv/) or pipx first." >&2
     exit 1

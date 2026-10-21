@@ -84,10 +84,12 @@ struct MenuContent: View {
 
         Divider()
 
-        if let base = Format.uiBase(status.ui) {
-            Button("Open Promptloom") { Actions.open(base) }
+        if Format.uiBase(status.ui) != nil {
+            Button("New prompt…") { Actions.openApp("compose") }
+                .keyboardShortcut("n")
+            Button("Open Promptloom") { Actions.openApp("") }
                 .keyboardShortcut("o")
-            Button("Search…") { Actions.open(base + "#/search") }
+            Button("Search…") { Actions.openApp("search") }
                 .keyboardShortcut("f")
         }
         if let vault = status.vault, !vault.isEmpty {
@@ -154,9 +156,21 @@ enum Actions {
         NSWorkspace.shared.open(url)
     }
 
+    /// The app in its own window (`promptloom app PAGE`); the browser if that fails.
+    static func openApp(_ page: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: Paths.promptloomBinary())
+        process.arguments = ["app"] + (page.isEmpty ? [] : [page])
+        do {
+            try process.run()
+        } catch {
+            open("http://127.0.0.1:8765/" + (page.isEmpty ? "" : "#/" + page))
+        }
+    }
+
     static func openSession(_ session: SessionEntry, status: Status) {
-        if let base = Format.uiBase(status.ui), let key = session.key {
-            open(base + "#/session/" + Format.uriComponent(key))
+        if Format.uiBase(status.ui) != nil, let key = session.key {
+            openApp("session/" + Format.uriComponent(key))
         } else {
             obsidian(session.note, problem: status.vault_problem)
         }

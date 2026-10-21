@@ -9,10 +9,11 @@ $here = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 
 Write-Host "== CLI"
 if (Get-Command uv -ErrorAction SilentlyContinue) {
-    uv tool install --force --with anthropic --editable $here
+    uv tool install --force --with anthropic --with pywebview --editable $here
 } elseif (Get-Command pipx -ErrorAction SilentlyContinue) {
     pipx install --force --editable $here
     pipx inject promptloom anthropic
+    pipx inject promptloom pywebview
 } else {
     Write-Error "Install uv (https://docs.astral.sh/uv/) or pipx first."
 }

@@ -190,9 +190,14 @@ cd promptloom
 GNOME top bar extension (skipped without GNOME). Nothing needs sudo. On Wayland
 a new extension only appears after you log out and back in.
 
-**macOS** installs the command, a launchd agent, and builds the menu bar app
-into `~/Applications` (needs the Xcode Command Line Tools: `xcode-select
+**macOS** installs the command (with pywebview, so `promptloom app` opens a
+native window), a launchd agent, and builds the menu bar app into
+`~/Applications` (needs the Xcode Command Line Tools: `xcode-select
 --install`). See [macos/README.md](macos/README.md).
+
+**Updating** on any platform: `git pull` in the clone, then `./install.sh`
+(or `windows\install.ps1`) again. It restarts the daemon and rebuilds the menu
+bar app; the command itself is an editable install, so it tracks the clone.
 
 Everything above runs on Linux, macOS and Windows. The exceptions are
 listed with each platform below.
