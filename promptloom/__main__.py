@@ -12,7 +12,7 @@ import traceback
 from pathlib import Path
 from urllib.parse import quote
 
-from . import __version__, config, desktop, extract, gitlocal, launch, prs
+from . import __version__, brief, config, desktop, extract, gitlocal, launch, prs
 from .engine import Loom
 from .store import Store
 from .vault import obsidian_problem
@@ -404,6 +404,27 @@ def cmd_new(args) -> int:
     return 0
 
 
+def cmd_brief(args) -> int:
+    """Print a project's brief: paste it, pipe it, or point an assistant at it."""
+    from .userdata import UserData
+
+    store = Store(config.STATE_DIR)
+    store.load()
+    records = store.by_recency()
+    project = args.project or Path(os.getcwd()).name
+    if not any(r.session.project == project for r in records):
+        print(f"No project named {project!r}. Known: "
+              + ", ".join(sorted({r.session.project for r in records})), file=sys.stderr)
+        return 1
+    user = UserData(config.STATE_DIR)
+    user.load()
+    own = user.briefs.get(project, {})
+    auto = brief.draft_brief(project, records, own.get("hidden", []))
+    text = own.get("text", "")
+    print(brief.for_prompt(auto, text) if args.short else brief.render_brief(auto, text), end="")
+    return 0
+
+
 def cmd_log(args) -> int:
     """Record a prompt from any tool, for the api harness to pick up."""
     from .harnesses.api import harness_name
@@ -637,6 +658,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-m", "--model")
     p.add_argument("-C", "--context", help="project folder (default: the current one)")
     p.set_defaults(fn=cmd_new)
+
+    p = sub.add_parser("brief", help="what an assistant should know before working on a project")
+    p.add_argument("project", nargs="?", help="directory name (default: the current folder's)")
+    p.add_argument("--short", action="store_true", help="cut to fit at the top of a prompt")
+    p.set_defaults(fn=cmd_brief)
 
     p = sub.add_parser("search", help="search every prompt and note")
     p.add_argument("query", nargs="*", help='words, plus filters: model:opus project:shop '

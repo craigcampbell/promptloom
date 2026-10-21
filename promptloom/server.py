@@ -17,8 +17,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import (__version__, analysis, config, connect, desktop, engine, extract, gitlocal,
-               harnesses, launch, prs)
+from . import (__version__, analysis, brief, config, connect, desktop, engine, extract,
+               gitlocal, harnesses, launch, prs)
 from .store import Store
 from .userdata import UserData
 
@@ -203,6 +203,8 @@ class Handler(BaseHTTPRequestHandler):
             "errors": status.get("errors", []),
             "obsidian": bool(status.get("vault")),
             "drafts": sum(1 for d in app.user.drafts if not d.get("sent")),
+            "prs": prs.summary(app.state_dir, app.cfg),
+            "open_actions": sum(1 for r in records for a in r.actions if not a.get("done")),
         }
 
     def get_search(self, q):
@@ -251,6 +253,46 @@ class Handler(BaseHTTPRequestHandler):
 
     def get_connections(self, q):
         return analysis.connections(self.app.store, self.app.web())
+
+    def _brief(self, project: str) -> dict:
+        app = self.app
+        records = app.records()
+        if not any(r.session.project == project for r in records):
+            raise LookupError("no such project")
+        own = app.user.briefs.get(project, {})
+        auto = brief.draft_brief(project, records, own.get("hidden", []))
+        return {"auto": auto, "own": own.get("text", ""), "own_updated": own.get("updated", ""),
+                "text": brief.render_brief(auto, own.get("text", "")),
+                "prompt": brief.for_prompt(auto, own.get("text", ""))}
+
+    def get_brief(self, q):
+        return self._brief(q.get("project", ""))
+
+    def get_threads(self, q):
+        app = self.app
+        state = prs.load(app.state_dir)
+        labels = {n: i["label"] for n, i in app.info.items()}
+        found = brief.threads(app.records(), app.web(), app.user.drafts, state["prs"],
+                              {"threads": app.user.threads})
+        out = []
+        for thread in found:
+            if q.get("project") and thread.project != q["project"]:
+                continue
+            item = thread.to_dict(labels)
+            item["pinned"] = bool(app.user.threads.get(thread.id, {}).get("pinned"))
+            out.append(item)
+        return out
+
+    def get_handoff(self, q):
+        """A prompt that continues a session elsewhere, for the composer."""
+        record = self.app.store.records.get(q.get("key", ""))
+        if record is None:
+            raise LookupError("no such session")
+        tool = next((t["label"] for t in launch.tools(self.app.cfg)
+                     if t["name"] == q.get("tool")), "another tool")
+        text = self._brief(record.session.project)["prompt"]
+        return {"prompt": brief.handoff_prompt(record, text, tool),
+                "context": record.session.context, "project": record.session.project}
 
     def get_tools(self, q):
         """What "New prompt" can start, the models each has used, and where."""
@@ -386,6 +428,25 @@ class Handler(BaseHTTPRequestHandler):
                     raise LookupError("no such draft")
                 return {"deleted": body["delete"]}
             return user.put_draft(body)
+
+    def post_brief(self, body):
+        project = str(body.get("project") or "")
+        if not any(r.session.project == project for r in self.app.records()):
+            raise LookupError("no such project")
+        with self.app.user.editing() as user:
+            user.put_brief(project, None if body.get("text") is None else str(body["text"]),
+                           str(body.get("hide") or ""), str(body.get("unhide") or ""))
+        return self._brief(project)
+
+    def post_thread(self, body):
+        thread_id = str(body.get("id") or "")
+        if not thread_id.startswith("t-"):
+            raise ValueError("which thread?")
+        fields = {k: body[k] for k in ("name", "closed", "pinned") if k in body}
+        if "name" in fields:
+            fields["name"] = str(fields["name"]).strip()[:120]
+        with self.app.user.editing() as user:
+            return user.set_thread(thread_id, **fields)
 
     def post_launch(self, body):
         """Start a tool on a prompt, in a terminal; mark the draft as sent."""

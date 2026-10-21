@@ -8,25 +8,28 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<nav>
-  <div class="brand"><img src="icon.svg" alt="" width="20" height="20"> Promptloom</div>
+<header class="top">
+  <a class="brand" href="#/"><img src="icon.svg" alt="" width="20" height="20"> Promptloom</a>
+  <button class="palette-trigger" id="palette-open" title="Search or jump (Ctrl+K)"><span>Search or jump to…</span><kbd>⌘K</kbd></button>
+  <nav>
+    <a href="#/" data-nav="home">Loom</a>
+    <a href="#/threads" data-nav="threads">Threads</a>
+    <a href="#/projects" data-nav="projects">Projects</a>
+    <a href="#/drafts" data-nav="drafts">Drafts <span class="count" id="draft-count"></span></a>
+    <a href="#/prs" data-nav="prs">PRs <span class="count" id="pr-count"></span></a>
+    <details class="more"><summary>More</summary><div>
+      <a href="#/search" data-nav="search">Search</a>
+      <a href="#/tools" data-nav="tools">Tools</a>
+      <a href="#/models" data-nav="models">Models</a>
+      <a href="#/graph" data-nav="graph">Graph</a>
+      <a href="#/connections" data-nav="connections">Connections</a>
+      <a href="#/notes" data-nav="notes">Notes</a>
+      <a href="#/worktrees" data-nav="worktrees">Worktrees</a>
+    </div></details>
+  </nav>
   <a href="#/compose" class="new" data-nav="compose">+ New prompt</a>
-  <div class="section">Browse</div>
-  <a href="#/" data-nav="home">Home</a>
-  <a href="#/search" data-nav="search">Search</a>
-  <a href="#/projects" data-nav="projects">Projects</a>
-  <a href="#/models" data-nav="models">Models</a>
-  <a href="#/tools" data-nav="tools">Tools</a>
-  <div class="section">Connect</div>
-  <a href="#/graph" data-nav="graph">Graph</a>
-  <a href="#/connections" data-nav="connections">Connections</a>
-  <div class="section">Work</div>
-  <a href="#/drafts" data-nav="drafts">Drafts <span class="count" id="draft-count"></span></a>
-  <a href="#/notes" data-nav="notes">Notes</a>
-  <a href="#/prs" data-nav="prs">Pull requests</a>
-  <a href="#/worktrees" data-nav="worktrees">Worktrees</a>
-  <div class="foot" id="foot"></div>
-</nav>
+</header>
+<div class="foot" id="foot" hidden></div>
 <main id="main"><p class="muted">Loading…</p></main>
 <script src="app.js"></script>
 </body>

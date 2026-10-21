@@ -191,6 +191,8 @@ async function loadOverview() {
     `${overview.notes} notes` +
     (overview.waiting ? `<br><br>Summaries paused: ${esc(overview.waiting)}` : '');
   $('#draft-count').textContent = overview.drafts ? overview.drafts : '';
+  const need = (overview.prs?.waiting || 0) + (overview.prs?.asked || 0);
+  $('#pr-count').textContent = need ? need : '';
 }
 
 // views
@@ -200,46 +202,63 @@ const views = {};
 views.home = async () => {
   const o = overview;
   const active = o.active;
+  const [threads, tools] = await Promise.all([api('threads'), api('tools').catch(() => ({tools: []}))]);
+  const have = tools.tools.filter(x => x.available);
+  let conn = {ideas: []};
   main.innerHTML = `
     <div class="hero">
-      <h1>Promptloom</h1>
-      <p class="muted">Every prompt you've typed into ${Object.keys(o.harnesses).map(toolChip).join(' ') || 'your AI tools'}, in one place.</p>
       <form class="search" id="q">
         <input name="q" placeholder="Search prompts and notes…  try  model:opus  project:name  tag:idea" autofocus>
         <button class="primary">Search</button>
       </form>
-      <div class="row start" id="start"><span class="muted small">Start a prompt in</span></div>
+      <div class="row start">${active ? `<span class="pulse"></span> <span class="small">Now: <a href="${sessionHref(active.key)}">${esc(active.title)}</a> <span class="muted">· ${toolLabel(active.harness)} · ${esc(active.project)}</span></span>` : '<span class="small muted">No session active right now.</span>'}
+        <span class="grow"></span>
+        <span class="muted small">start in</span>${have.map(x => `<a href="#/compose?tool=${encodeURIComponent(x.name)}"><button>${esc(x.label)}</button></a>`).join('')}</div>
     </div>
-    <div class="stats">
-      <div class="card stat"><div class="n">${o.sessions}</div><div class="l">sessions</div></div>
-      <div class="card stat"><div class="n">${o.prompts}</div><div class="l">prompts</div></div>
-      <div class="card stat"><div class="n">${Object.keys(o.harnesses).length}</div><div class="l">tools</div></div>
-      <div class="card stat"><div class="n">${o.notes}</div><div class="l">notes</div></div>
-    </div>
-    ${active ? `<h2>Active now</h2><div class="item"><a href="${sessionHref(active.key)}"><h3>${esc(active.title)}</h3></a>
-      <div class="meta">${esc(active.harness_label)} · ${esc(active.project)} · ${ago(active.updated)}${active.model ? ' · ' + esc(active.model) : ''}</div></div>` : ''}
-    <h2>Quick capture</h2>
-    <form class="search" id="cap">
-      <input name="text" placeholder="A thought, a link, or start with todo: for an action item">
-      <button>Save</button>
-    </form>
-    <h2>Recent sessions</h2>
-    <div class="list">${o.recent.map(sessionItem).join('') || '<p class="empty">Nothing captured yet. Use Claude Code, Codex or another tool and it will show up here.</p>'}</div>
-    ${o.captures.length ? `<h2>Inbox</h2><div class="list">${o.captures.slice(0, 10).map(c =>
-      `<div class="item"><div>${c.todo ? (c.done ? '☑ ' : '☐ ') : ''}${esc(c.text)}</div>
-       <div class="meta">${ago(c.ts)}${c.context ? ' · ' + esc(c.context) : ''}</div></div>`).join('')}</div>` : ''}
-    ${o.errors && o.errors.length ? `<h2>Warnings</h2><div class="small muted">${o.errors.map(esc).join('<br>')}</div>` : ''}
-  `;
-  $('#q').onsubmit = e => {
-    e.preventDefault();
-    location.hash = searchHref(e.target.q.value);
-  };
-  api('tools').then(t => {
-    const have = t.tools.filter(x => x.available);
-    $('#start').insertAdjacentHTML('beforeend', have.map(x =>
-      `<a href="#/compose?tool=${encodeURIComponent(x.name)}"><button>${esc(x.label)}</button></a>`).join('') +
-      `<a href="#/drafts" class="small">${o.drafts ? `${o.drafts} draft${o.drafts > 1 ? 's' : ''} waiting` : 'drafts'}</a>`);
-  }).catch(() => {});
+    <div class="loom">
+      <section>
+        <h2>Threads <a class="small muted" href="#/threads">all</a></h2>
+        <div class="list" id="threads">${threads.slice(0, 7).map(threadCard).join('') || '<p class="empty">Nothing yet. Use any AI tool and the work shows up here.</p>'}</div>
+      </section>
+      <section>
+        <h2>Needs you</h2>
+        <div class="list" id="needs"></div>
+        <h2>Quick capture</h2>
+        <form class="search" id="cap"><input name="text" placeholder="A thought, a link, or todo: …"><button>Save</button></form>
+      </section>
+      <section>
+        <h2>Suggested</h2>
+        <div class="list" id="ideas"><p class="muted small">Looking…</p></div>
+      </section>
+    </div>`;
+  // Needs you: drafts waiting, pull requests, open action items.
+  const needs = [];
+  const drafts = await api('drafts').catch(() => []);
+  for (const d of drafts.filter(d => !d.sent).slice(0, 4))
+    needs.push(`<div class="item slim"><a href="#/compose?draft=${encodeURIComponent(d.id)}">${esc(d.title)}</a><div class="meta">draft · ${ago(d.updated)}</div></div>`);
+  if (o.prs?.enabled) {
+    const p = await api('prs').catch(() => ({prs: []}));
+    for (const pr of p.prs.filter(x => (x.mine && x.waiting) || x.asked).slice(0, 4))
+      needs.push(`<div class="item slim"><a href="#/prs">${esc(pr.repo.split('/')[1])}#${pr.number} ${esc(pr.title)}</a><div class="meta">${pr.asked ? 'review requested' : `${pr.waiting} new comment${pr.waiting > 1 ? 's' : ''}`}</div></div>`);
+  }
+  const open = threads.flatMap(t => t.open.map(a => ({a, t}))).slice(0, 5);
+  for (const {a, t} of open)
+    needs.push(`<div class="item slim">☐ ${esc(a)}<div class="meta">${esc(t.project)} · <a href="#/threads?open=${encodeURIComponent(t.id)}">${esc(t.name)}</a></div></div>`);
+  $('#needs').innerHTML = needs.join('') || '<p class="empty">Nothing waiting on you.</p>';
+  // Suggested: hand-offs and connection ideas.
+  try { conn = await api('connections'); } catch { conn = {ideas: []}; }
+  const ideas = [];
+  if (o.recent[0] && have.length > 1) {
+    const s0 = o.recent[0];
+    const other = have.find(x => x.harness !== s0.harness) || have[0];
+    ideas.push(`<div class="item slim"><strong>Hand off “${esc(s0.title)}”</strong><div class="small muted">Pick it up in ${esc(other.label)} with what was done, what's open and the brief.</div>
+      <div class="row small" style="margin-top:4px"><a href="#/compose?handoff=${encodeURIComponent(s0.key)}&tool=${encodeURIComponent(other.name)}"><button>Continue in ${esc(other.label)}</button></a></div></div>`);
+  }
+  for (const i of conn.ideas.slice(0, 3))
+    ideas.push(`<div class="item slim"><strong>${esc(i.title)}</strong><div class="small muted clip">${esc(i.prompt.slice(0, 180))}…</div>
+      <div class="row small" style="margin-top:4px"><a href="#/compose?idea=${encodeURIComponent(i.prompt)}&context=${encodeURIComponent(i.where || '')}"><button>Open as a prompt</button></a></div></div>`);
+  $('#ideas').innerHTML = ideas.join('') || '<p class="empty">Nothing to suggest yet.</p>';
+  $('#q').onsubmit = e => { e.preventDefault(); location.hash = searchHref(e.target.q.value); };
   $('#cap').onsubmit = async e => {
     e.preventDefault();
     const text = e.target.text.value.trim();
@@ -249,6 +268,18 @@ views.home = async () => {
     toast('Saved. It appears in the inbox on the next sync.');
   };
 };
+
+function threadCard(t) {
+  const tools = Object.entries(t.tools).map(([h]) => toolChip(h)).join('');
+  const extras = [t.drafts.length ? `${t.drafts.length} draft${t.drafts.length > 1 ? 's' : ''}` : '',
+    t.prs.length ? `${t.prs.length} PR${t.prs.length > 1 ? 's' : ''}` : '',
+    t.open.length ? `${t.open.length} open` : ''].filter(Boolean);
+  return `<div class="item thread" data-thread="${esc(t.id)}">
+    <div class="row"><a class="grow" href="#/threads?open=${encodeURIComponent(t.id)}"><h3>${t.pinned ? '📌 ' : ''}${esc(t.name)}</h3></a></div>
+    <div class="meta"><a href="${projectHref(t.project)}">${esc(t.project)}</a> · ${t.sessions.length} session${t.sessions.length > 1 ? 's' : ''} · ${t.prompts} prompts · ${ago(t.updated)}${extras.length ? ' · ' + extras.join(', ') : ''}</div>
+    <div class="chips" data-no-search>${tools}${Object.keys(t.models).slice(0, 3).map(m => chip('model:' + m)).join('')}</div>
+  </div>`;
+}
 
 function sessionItem(s) {
   return `<div class="item">
@@ -334,6 +365,10 @@ function tagEditor(tags, onChange) {
 views.session = async (params, key) => {
   const s = await api('session?key=' + encodeURIComponent(key));
   const auto = s.tags.filter(t => t.includes(':'));
+  api('tools').then(t => {
+    $('#handoff').innerHTML = t.tools.filter(x => x.available && !x.gui).map(x =>
+      `<a href="#/compose?handoff=${encodeURIComponent(s.key)}&tool=${encodeURIComponent(x.name)}"><button title="Pick this work up in ${esc(x.label)}, with what was done, what is open and the brief">${esc(x.label)}</button></a>`).join(' ');
+  }).catch(() => {});
   main.innerHTML = `
     <div class="muted small"><a href="${projectHref(s.project)}">${esc(s.project)}</a> · ${esc(overview.labels[s.harness] || s.harness)}</div>
     <h1>${esc(s.title)}</h1>
@@ -345,6 +380,7 @@ views.session = async (params, key) => {
       ${s.resume ? `<button id="resume">Copy resume command</button>` : ''}
       <button id="sid">Copy session ID</button>
       <a href="#/note/new?session=${encodeURIComponent(s.key)}&project=${encodeURIComponent(s.project)}"><button>Add note</button></a>
+      <span class="grow"></span><span class="muted small">continue in</span><span id="handoff"></span>
     </div>
     ${s.notes.length ? `<h2>Notes</h2><div class="list">${s.notes.map(n =>
       `<div class="item"><a href="#/note/${encodeURIComponent(n.id)}"><h3>${esc(n.title)}</h3></a>${chips(n.tags)}</div>`).join('')}</div>` : ''}
@@ -500,6 +536,7 @@ views.project = async (params, name) => {
       <div class="item"><a href="${projectHref(l.other)}">${esc(l.other)}</a> <span class="muted small">shares</span>
       <div class="chips">${l.words.map(w => `<span class="chip" data-tag="${esc(w)}">${esc(w)}</span>`).join('')}</div></div>`).join('')}</div>` : ''}
     ${p.themes.length ? `<h2>Themes</h2>${chips(p.themes.map(t => 'theme:' + t))}` : ''}
+    <div id="brief"></div>
     <h2>Notes</h2>
     <div class="list">${p.notes.map(n => `<div class="item"><a href="#/note/${encodeURIComponent(n.id)}">${esc(n.title)}</a></div>`).join('')}</div>
     <p><a href="#/note/new?project=${encodeURIComponent(p.project)}"><button>Add a note to ${esc(p.project)}</button></a></p>
@@ -508,6 +545,8 @@ views.project = async (params, name) => {
     <h2>Sessions, oldest first</h2>
     <div class="list">${p.sessions.map(sessionItem).join('')}</div>`;
   $('#chart').append(activityChart(p.days));
+  const loadBrief = async () => { $('#brief').innerHTML = await briefSection(p.project); wireBrief(p.project, loadBrief); };
+  loadBrief();
   if ($('#proj-term')) $('#proj-term').onclick = () => api('open-terminal', {context: info.contexts[0]}).then(() => toast('Opening a terminal…'), err => toast(err.message));
   // The chips above search for the word; links between projects are by word.
   for (const el of main.querySelectorAll('.chip[data-tag]'))
@@ -963,6 +1002,144 @@ views.note = async (params, id) => {
 
 // routing
 
+// threads
+
+views.threads = async params => {
+  const threads = await api('threads');
+  const tools = await api('tools').catch(() => ({tools: []}));
+  const have = tools.tools.filter(x => x.available);
+  const openId = params.get('open');
+  main.innerHTML = `
+    <h1>Threads</h1>
+    <p class="muted">Lines of work, across tools and models: sessions in a project whose prompts share the same unusual words, close in time, with the drafts and pull requests for that folder. Rename, pin or close them.</p>
+    <div class="list">${threads.map(t => `<details class="item thread" data-thread="${esc(t.id)}"${t.id === openId ? ' open' : ''}>
+      <summary><div class="row"><span class="grow"><strong>${t.pinned ? '📌 ' : ''}${esc(t.name)}</strong> <span class="muted small">${esc(t.project)} · ${t.sessions.length} session${t.sessions.length > 1 ? 's' : ''} · ${ago(t.updated)}</span></span>
+        <span class="chips" data-no-search>${Object.keys(t.tools).map(toolChip).join('')}</span></div></summary>
+      <div class="body">
+        ${t.words.length ? `<div class="chips">${t.words.map(w => `<span class="chip" data-tag="${esc(w)}">${esc(w)}</span>`).join('')}</div>` : ''}
+        <div class="row small" style="margin:8px 0">
+          <button data-rename="${esc(t.id)}">Rename</button>
+          <button data-pin="${esc(t.id)}">${t.pinned ? 'Unpin' : 'Pin'}</button>
+          <button data-close="${esc(t.id)}">Close</button>
+          <span class="grow"></span>
+          ${t.sessions[0] ? have.map(x => `<a href="#/compose?handoff=${encodeURIComponent(t.sessions[0].key)}&tool=${encodeURIComponent(x.name)}"><button>Continue in ${esc(x.label)}</button></a>`).join('') : ''}</div>
+        ${t.open.length ? `<div class="small">${t.open.map(a => `☐ ${esc(a)}`).join('<br>')}</div>` : ''}
+        ${t.drafts.length ? `<div class="small" style="margin-top:6px">Drafts: ${t.drafts.map(d => `<a href="#/compose?draft=${encodeURIComponent(d.id)}">${esc(d.title)}</a>`).join(' · ')}</div>` : ''}
+        ${t.prs.length ? `<div class="small" style="margin-top:6px">Pull requests: ${t.prs.map(p => `<a href="${esc(p.url)}" target="_blank" rel="noopener">#${p.number} ${esc(p.title)}</a>${p.waiting ? ` ${badge(p.waiting + ' new', 'hot')}` : ''}`).join(' · ')}</div>` : ''}
+        <div class="list" style="margin-top:10px">${t.sessions.map(s => `<div class="item slim"><a href="${sessionHref(s.key)}">${esc(s.title)}</a>
+          <div class="meta">${toolChip(s.harness)} ${s.prompts} prompts · ${ago(s.updated)}</div>${s.summary ? `<div class="small">${esc(s.summary)}</div>` : ''}</div>`).join('')}</div>
+      </div></details>`).join('') || '<p class="empty">Nothing yet.</p>'}</div>`;
+  const set = async (id, body) => { await api('thread', {id, ...body}); views.threads(params); };
+  main.querySelectorAll('[data-rename]').forEach(b => { b.onclick = () => {
+    const name = prompt('Name this thread', b.closest('.thread').querySelector('strong').textContent.replace(/^📌 /, ''));
+    if (name !== null) set(b.dataset.rename, {name});
+  }; });
+  main.querySelectorAll('[data-pin]').forEach(b => { b.onclick = () => set(b.dataset.pin, {pinned: b.textContent === 'Pin'}); });
+  main.querySelectorAll('[data-close]').forEach(b => { b.onclick = () => { if (confirm('Close this thread? Its sessions stay; it just leaves the list.')) set(b.dataset.close, {closed: true}); }; });
+  main.querySelectorAll('.chip[data-tag]').forEach(el => { el.onclick = e => { e.stopPropagation(); location.hash = searchHref(el.dataset.tag); }; });
+  if (openId) main.querySelector(`[data-thread="${CSS.escape(openId)}"]`)?.scrollIntoView();
+};
+
+// the brief: what every assistant should know about a project
+
+async function briefSection(project) {
+  const b = await api('brief?project=' + encodeURIComponent(project));
+  const sugg = b.auto.conventions.filter(c => c.times < 2).slice(0, 8);
+  return `<h2>Brief <span class="muted small">what any AI should know first</span></h2>
+    <div class="brief">
+      <div>
+        <div class="label small muted">Your part, on top of what promptloom works out</div>
+        <textarea id="brief-own" rows="6" placeholder="Conventions, what matters, what not to touch, who this is for…">${esc(b.own)}</textarea>
+        <div class="row small" style="margin-top:6px"><button class="primary" id="brief-save">Save</button><button id="brief-copy">Copy the whole brief</button>
+          <span class="muted">${b.own_updated ? `saved ${ago(b.own_updated)}` : ''} · served to assistants as <code>project_brief</code></span></div>
+        ${sugg.length || b.auto.pitfalls.length ? `<div class="label small muted" style="margin-top:12px">Things you said that sound like rules or warnings; add the ones that are</div>
+        <div class="list">${sugg.map(c => `<div class="item slim row"><span class="grow small">${esc(c.text)} <a class="muted" href="${sessionHref(c.session)}">↗</a></span><button data-add="${esc(c.key)}">Add</button><button data-hide="${esc(c.key)}" class="link">hide</button></div>`).join('')}
+        ${b.auto.pitfalls.map(c => `<div class="item slim row"><span class="grow small">⚠ ${esc(c.text)} <a class="muted" href="${sessionHref(c.session)}">↗</a></span><button data-hide="${esc(c.key)}" class="link">hide</button></div>`).join('')}</div>` : ''}
+      </div>
+      <details><summary class="small">What promptloom works out on its own</summary><div class="note-view small">${markdown(b.text)}</div></details>
+    </div>`;
+}
+
+function wireBrief(project, reload) {
+  const own = $('#brief-own');
+  const save = async (extra = {}) => { await api('brief', {project, text: own.value, ...extra}); };
+  $('#brief-save').onclick = async () => { await save(); toast('Brief saved'); reload(); };
+  $('#brief-copy').onclick = async () => { const b = await api('brief?project=' + encodeURIComponent(project)); copy(b.text); };
+  main.querySelectorAll('[data-add]').forEach(btn => { btn.onclick = async () => {
+    const text = btn.closest('.item').querySelector('span').textContent.replace(/\s*↗\s*$/, '').trim();
+    own.value = (own.value.trim() ? own.value.trim() + '\n' : '') + '- ' + text;
+    await save({hide: btn.dataset.add});
+    reload();
+  }; });
+  main.querySelectorAll('[data-hide]').forEach(btn => { btn.onclick = async () => { await api('brief', {project, hide: btn.dataset.hide}); reload(); }; });
+}
+
+// the command palette: search or jump from anywhere
+
+let paletteData = null;
+async function paletteIndex() {
+  if (paletteData) return paletteData;
+  const [projects, threads, sessions] = await Promise.all([
+    api('projects').catch(() => []), api('threads').catch(() => []), api('sessions').catch(() => [])]);
+  paletteData = {projects, threads, sessions: sessions.slice(0, 200)};
+  return paletteData;
+}
+
+function openPalette() {
+  if ($('dialog.palette')) return;
+  const dlg = document.createElement('dialog');
+  dlg.className = 'palette';
+  dlg.innerHTML = `<input placeholder="Search prompts, or jump to a project, thread, session or page…" autofocus><div class="results"></div>`;
+  document.body.append(dlg);
+  const input = $('input', dlg), results = $('.results', dlg);
+  const pages = [['Loom', '#/'], ['Threads', '#/threads'], ['Projects', '#/projects'], ['Drafts', '#/drafts'],
+    ['Pull requests', '#/prs'], ['Tools', '#/tools'], ['Models', '#/models'], ['Graph', '#/graph'],
+    ['Connections', '#/connections'], ['Notes', '#/notes'], ['Worktrees', '#/worktrees'], ['New prompt', '#/compose']];
+  let items = [], selected = 0, turn = 0;
+  const render = () => {
+    results.innerHTML = items.map((it, i) => `<div class="result${i === selected ? ' on' : ''}" data-i="${i}"><span class="k">${esc(it.kind)}</span>${esc(it.label)}${it.sub ? `<span class="muted small"> · ${esc(it.sub)}</span>` : ''}</div>`).join('');
+    results.querySelector('.on')?.scrollIntoView({block: 'nearest'});
+  };
+  const go = it => { dlg.close(); location.hash = it.href; };
+  const update = async () => {
+    const q = input.value.trim(), lq = q.toLowerCase();
+    const hit = s => !lq || s.toLowerCase().includes(lq);
+    const mine = ++turn;  // a slower, older lookup must not overwrite a newer one
+    const d = await paletteIndex();
+    if (mine !== turn) return;
+    items = [];
+    if (q) items.push({kind: 'search', label: `Search prompts for “${q}”`, href: searchHref(q)});
+    for (const p of d.projects.filter(p => hit(p.name)).slice(0, 5)) {
+      items.push({kind: 'project', label: p.name, sub: `${p.sessions} sessions`, href: projectHref(p.name)});
+      if (q) items.push({kind: 'new', label: `New prompt in ${p.name}`, href: `#/compose?context=${encodeURIComponent(p.contexts[0] || '')}`});
+    }
+    for (const t of d.threads.filter(t => hit(t.name) || hit(t.project)).slice(0, 5))
+      items.push({kind: 'thread', label: t.name, sub: t.project, href: `#/threads?open=${encodeURIComponent(t.id)}`});
+    for (const s of d.sessions.filter(s => hit(s.title)).slice(0, q ? 6 : 3))
+      items.push({kind: 'session', label: s.title, sub: `${s.project} · ${ago(s.updated)}`, href: sessionHref(s.key)});
+    for (const [label, href] of pages.filter(([l]) => hit(l)).slice(0, q ? 4 : 12))
+      items.push({kind: 'page', label, href});
+    selected = 0;
+    render();
+  };
+  input.oninput = update;
+  input.onkeydown = e => {
+    if (e.key === 'ArrowDown') { selected = Math.min(items.length - 1, selected + 1); render(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { selected = Math.max(0, selected - 1); render(); e.preventDefault(); }
+    else if (e.key === 'Enter' && items[selected]) { e.preventDefault(); go(items[selected]); }
+  };
+  results.onclick = e => { const el = e.target.closest('.result'); if (el) go(items[+el.dataset.i]); };
+  dlg.onclick = e => { if (e.target === dlg) dlg.close(); };
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.showModal();
+  update();
+}
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); }
+  else if (e.key === 'Escape') $('dialog.palette')?.close();
+});
+document.getElementById('palette-open').onclick = openPalette;
+
 // tools (harnesses)
 
 views.tools = async () => {
@@ -1011,6 +1188,16 @@ views.compose = async params => {
   if (params.get('draft')) {
     try { draft = await api('draft?id=' + encodeURIComponent(params.get('draft'))); } catch { draft = null; }
   }
+  // Picking a session up elsewhere, or starting from a suggested prompt.
+  let seed = params.get('idea') || '';
+  let seedContext = '';
+  if (params.get('handoff')) {
+    try {
+      const h = await api(`handoff?key=${encodeURIComponent(params.get('handoff'))}&tool=${encodeURIComponent(params.get('tool') || '')}`);
+      seed = h.prompt;
+      seedContext = h.context;
+    } catch (err) { toast(err.message); }
+  }
   const installed = t.tools.filter(x => x.available);
   const byName = Object.fromEntries(t.tools.map(x => [x.name, x]));
   const wantHarness = params.get('harness');
@@ -1019,7 +1206,7 @@ views.compose = async params => {
     localStorage.getItem('pl.tool') || installed[0]?.name || '';
   if (!byName[tool]?.available) tool = installed[0]?.name || '';
   const model = draft?.model ?? params.get('model') ?? '';
-  const context = draft?.context || params.get('context') || t.contexts[0]?.context || '';
+  const context = draft?.context || params.get('context') || seedContext || t.contexts[0]?.context || '';
   const weaver = t.weavers.find(w => w.default)?.id || t.weavers[0]?.id || '';
   const contextKnown = t.contexts.some(c => c.context === context);
 
@@ -1028,7 +1215,9 @@ views.compose = async params => {
       <span class="muted small" id="saved">${draft ? `saved ${ago(draft.updated)}` : 'not saved yet'}</span></div>
     <div class="compose">
       <div class="editor">
-        <textarea id="body" placeholder="What do you want done? Write it the way you'd say it; weave it afterwards if you want a second pair of eyes on it.">${esc(draft?.body || '')}</textarea>
+        <textarea id="body" placeholder="What do you want done? Write it the way you'd say it; weave it afterwards if you want a second pair of eyes on it.">${esc(draft?.body || seed)}</textarea>
+        <label class="toggle" style="margin-top:8px"><input type="checkbox" id="with-brief"${seed.includes('# About ') ? '' : ' checked'}> Put the project brief on top <span class="muted" id="brief-size"></span></label>
+        <details id="brief-preview" hidden><summary class="small">The brief that will go on top</summary><pre class="prompt-box" id="brief-text"></pre></details>
         <div class="row small muted" id="status">${draft?.sent ? `Sent to ${esc(draft.sent_with)} ${ago(draft.sent)}.` : ''}</div>
         ${draft?.versions?.length ? `<details class="versions"><summary class="small">Woven ${draft.versions.length} time${draft.versions.length > 1 ? 's' : ''}</summary>
           ${draft.versions.slice().reverse().map((v, i) => `<div class="version">
@@ -1064,6 +1253,20 @@ views.compose = async params => {
     </div>`;
 
   const body = $('#body');
+  // The brief: what any assistant should know about the project, on top of the prompt.
+  let briefText = '';
+  const loadBrief = async () => {
+    const dir = $('#context').value.trim();
+    const project = t.contexts.find(c => c.context === dir)?.project || dir.split('/').filter(Boolean).pop() || '';
+    briefText = '';
+    try { briefText = project ? (await api('brief?project=' + encodeURIComponent(project))).prompt : ''; } catch { briefText = ''; }
+    $('#brief-size').textContent = briefText ? `(${briefText.split('\n').length} lines for ${project})` : '(none for this folder yet)';
+    $('#with-brief').disabled = !briefText;
+    $('#brief-preview').hidden = !briefText;
+    $('#brief-text').textContent = briefText;
+  };
+  loadBrief();
+  const withBrief = () => $('#with-brief').checked && briefText ? briefText.trim() + '\n\n---\n\n' + body.value : body.value;
   const form = {
     tool: () => main.querySelector('input[name=tool]:checked')?.value || '',
     model: () => $('#model').value.trim(),
@@ -1084,7 +1287,9 @@ views.compose = async params => {
     $('#context').hidden = Boolean(v);
     if (v) $('#context').value = v; else $('#context').focus();
     queueSave();
+    loadBrief();
   };
+  $('#context').onchange = loadBrief;
 
   let saving = false;
   const save = async () => {
@@ -1106,7 +1311,7 @@ views.compose = async params => {
   $('#model').oninput = queueSave;
   $('#context').oninput = queueSave;
   $('#save').onclick = async () => { clearTimeout(composeTimer); await save(); toast('Saved'); };
-  $('#copy').onclick = () => copy(body.value);
+  $('#copy').onclick = () => copy(withBrief());
   if ($('#delete')) $('#delete').onclick = async () => {
     if (!confirm('Delete this draft?')) return;
     await api('drafts', {delete: draft.id});
@@ -1142,8 +1347,8 @@ views.compose = async params => {
     btn.disabled = true;
     try {
       await save();
-      if (byName[form.tool()]?.gui) await navigator.clipboard.writeText(body.value).catch(() => {});
-      const done = await api('launch', {tool: form.tool(), prompt: body.value, model: form.model(), context: form.context(), draft: draft?.id});
+      if (byName[form.tool()]?.gui) await navigator.clipboard.writeText(withBrief()).catch(() => {});
+      const done = await api('launch', {tool: form.tool(), prompt: withBrief(), model: form.model(), context: form.context(), draft: draft?.id});
       $('#status').textContent = done.how === 'gui'
         ? `Opened ${done.tool} on ${done.dir}; the prompt is on your clipboard, paste it in.`
         : `Opened ${done.tool} in a terminal in ${done.dir}.`;
@@ -1435,8 +1640,12 @@ async function route() {
   const parts = path.split('/').filter(Boolean).map(decodeURIComponent);
   const name = parts[0] || 'home';
   const params = new URLSearchParams(query);
-  for (const a of document.querySelectorAll('nav a'))
-    a.classList.toggle('on', a.dataset.nav === (name === 'session' ? 'search' : name === 'project' ? 'projects' : name === 'note' ? 'notes' : name));
+  const current = name === 'session' ? 'search' : name === 'project' ? 'projects' : name === 'note' ? 'notes' : name;
+  for (const a of document.querySelectorAll('header a[data-nav]'))
+    a.classList.toggle('on', a.dataset.nav === current);
+  const more = $('header .more');
+  more.open = false;
+  more.classList.toggle('on', Boolean(more.querySelector(`a[data-nav="${current}"]`)));
   const view = views[name];
   if (!view) { main.innerHTML = '<p class="empty">Nothing here.</p>'; return; }
   try {

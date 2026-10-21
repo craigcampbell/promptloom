@@ -15,7 +15,25 @@ summaries. It runs on Linux, macOS and Windows.
 
 `promptloom app` opens the app in a window of its own, with an icon in the
 dock (`promptloom ui` opens it in the browser instead). It is served from your
-own machine and works offline.
+own machine and works offline. Press **Ctrl+K** (⌘K) anywhere to search or
+jump: prompts, projects, threads, sessions, pages, or "new prompt in …".
+
+The app is built around three things promptloom keeps for you between
+sessions, tools and models:
+
+- **Briefs**: what every assistant should know before touching a project.
+  Promptloom drafts one from your history (where things stand, rules you
+  have stated more than once, what went wrong before, what is still open);
+  you write the part that matters on top. The composer puts it at the top of
+  a prompt, `promptloom brief` prints it, and the MCP tool `project_brief`
+  hands it to any assistant that asks. The point is to stop re-explaining.
+- **Threads**: lines of work rather than a flat list of sessions. Sessions in
+  a project whose prompts share unusual words, close in time, are grouped
+  with the drafts and pull requests for that folder, across tools and models.
+  Rename, pin or close them.
+- **Hand-offs**: from any session, "Continue in …" opens the composer with a
+  prompt that picks the work up in another tool or model: what was done, the
+  last things asked, what is open, and the brief.
 
 - **New prompt** is where a prompt starts: pick the tool (Claude Code, Codex,
   the Copilot CLI, Hermes, pi, OpenClaw, VS Code, Cursor; only the installed
@@ -39,6 +57,8 @@ own machine and works offline.
   show up in search and on the graph.
 - **Projects** shows each project's activity day by day, coloured by model, and
   every point where the work moved from one model to another.
+- **Loom** (home) shows your threads, what needs you (drafts waiting, pull
+  request feedback, open action items) and what promptloom suggests.
 - **Models** shows which models worked on which projects, the projects several
   models shared, and the most common hand-offs.
 - **Tools** does the same for the tools themselves, apart from the models
@@ -121,9 +141,9 @@ args = ["mcp"]
 { "servers": { "promptloom": { "type": "stdio", "command": "promptloom", "args": ["mcp"] } } }
 ```
 
-Its tools are `search_prompts`, `project_history`, `related_work`,
-`list_projects` and `capture_note`. It reads your history and can add to your
-inbox; it changes nothing else.
+Its tools are `project_brief` (read this first), `search_prompts`,
+`project_history`, `related_work`, `list_projects` and `capture_note`. It
+reads your history and can add to your inbox; it changes nothing else.
 
 ## Install
 
@@ -178,6 +198,7 @@ python scripts/demo.py ~/promptloom-demo   # prints the command to open it
 ```
 promptloom app [PAGE]          open the app in a window of its own (--install: menu entry)
 promptloom new -t TOOL TEXT    start a tool on a prompt here (-m MODEL, -C FOLDER)
+promptloom brief [PROJECT]     what an assistant should know first (--short for a prompt)
 promptloom ui [QUERY]          open the app in the browser (search for QUERY)
 promptloom search WORDS        search from the terminal (--json for scripts)
 promptloom status              active and recent sessions

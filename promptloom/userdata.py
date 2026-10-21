@@ -42,6 +42,8 @@ class UserData:
         # id, title, body, tool, model, context, created, updated, sent, sent_with, and
         # versions: every weave, with the text before and after
         self.drafts: list[dict] = []
+        self.briefs: dict[str, dict] = {}  # project -> {"text", "updated"}: what you wrote
+        self.threads: dict[str, dict] = {}  # thread id -> {"name", "closed", "pinned"}
         self._loaded = None
 
     def load(self) -> None:
@@ -57,10 +59,13 @@ class UserData:
         self.session_tags = data.get("session_tags", {})
         self.prompt_tags = data.get("prompt_tags", {})
         self.drafts = data.get("drafts", [])
+        self.briefs = data.get("briefs", {})
+        self.threads = data.get("threads", {})
 
     def save(self) -> None:
         data = {"version": 1, "notes": self.notes, "session_tags": self.session_tags,
-                "prompt_tags": self.prompt_tags, "drafts": self.drafts}
+                "prompt_tags": self.prompt_tags, "drafts": self.drafts,
+                "briefs": self.briefs, "threads": self.threads}
         write_atomic(self.path, json.dumps(data, ensure_ascii=False, indent=1))
         self._loaded = self.path.stat().st_mtime_ns
 
@@ -143,6 +148,31 @@ class UserData:
         before = len(self.drafts)
         self.drafts = [d for d in self.drafts if d["id"] != draft_id]
         return len(self.drafts) != before
+
+    # briefs and threads
+
+    def put_brief(self, project: str, text: str | None = None, hide: str = "",
+                  unhide: str = "") -> dict:
+        entry = self.briefs.setdefault(project, {"text": "", "updated": "", "hidden": []})
+        if text is not None:
+            entry["text"] = text.rstrip()
+            entry["updated"] = extract.now_ts()
+        hidden = [h for h in entry.get("hidden", []) if h != unhide]
+        if hide and hide not in hidden:
+            hidden.append(hide)
+        entry["hidden"] = hidden
+        if not entry["text"] and not hidden:
+            self.briefs.pop(project, None)
+        return entry
+
+    def set_thread(self, thread_id: str, **fields) -> dict:
+        entry = self.threads.setdefault(thread_id, {})
+        for key in ("name", "closed", "pinned"):
+            if key in fields:
+                entry[key] = fields[key]
+        if not any(entry.values()):
+            self.threads.pop(thread_id, None)
+        return entry
 
     # tags
 

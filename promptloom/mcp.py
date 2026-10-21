@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import sys
 
-from . import __version__, analysis, config, connect, engine
+from . import __version__, analysis, brief, config, connect, engine
 from .store import Store
 from .userdata import UserData
 
@@ -34,6 +34,16 @@ TOOLS = [
         "description": "How a project came together: its sessions in order with summaries, "
                        "which models and tools worked on it, when the work moved between "
                        "models, and its open action items.",
+        "inputSchema": {"type": "object", "properties": {
+            "project": {"type": "string", "description": "directory name of the project"}},
+            "required": ["project"]},
+    },
+    {
+        "name": "project_brief",
+        "description": "What to know before working on a project: where things stand, rules "
+                       "and preferences the user has stated, what went wrong before, what is "
+                       "still open. Read it first when starting work in a project the user "
+                       "has used AI tools in before.",
         "inputSchema": {"type": "object", "properties": {
             "project": {"type": "string", "description": "directory name of the project"}},
             "required": ["project"]},
@@ -90,11 +100,12 @@ class Tools:
             return f"No project named {project}. Known: {', '.join(names)}"
         data = analysis.timeline(records, project, self.user)
         info = data["info"]
+        own = self.user.briefs.get(project, {}).get("text", "")
         lines = [f"# {project}", f"{info['sessions']} sessions, {info['prompts']} prompts, "
                  f"{info['first'][:10]} to {info['last'][:10]}",
                  "Models: " + ", ".join(f"{m} ({n})" for m, n in info["models"].items()),
                  "Tools: " + ", ".join(f"{h} ({n})" for h, n in info["harnesses"].items()),
-                 "", "## Sessions"]
+                 "", *([own, ""] if own else []), "## Sessions"]
         for s in data["sessions"]:
             lines.append(f"- {s['started'][:10]} {s['title']} [{s['harness']}; "
                          f"{', '.join(s['models']) or 'model unknown'}]"
@@ -107,6 +118,15 @@ class Tools:
         if open_actions:
             lines += ["", "## Open action items"] + [f"- {a['text']}" for a in open_actions]
         return "\n".join(lines)
+
+    def project_brief(self, project: str):
+        records = self._load()
+        if not any(r.session.project == project for r in records):
+            names = sorted({r.session.project for r in records})
+            return f"No project named {project}. Known: {', '.join(names)}"
+        own = self.user.briefs.get(project, {})
+        return brief.render_brief(brief.draft_brief(project, records, own.get("hidden", [])),
+                                  own.get("text", ""))
 
     def related_work(self, project: str):
         records = self._load()
