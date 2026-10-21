@@ -329,7 +329,29 @@ class Tray:
         # The watcher comes back after a shell restart; register again then.
         Gio.bus_watch_name_on_connection(self.bus, WATCHER, Gio.BusNameWatcherFlags.NONE,
                                          lambda *_: self.register(), None)
+        # Step aside when the desktop app starts; it brings its own icon.
+        GLib.timeout_add_seconds(10, self._yield_to_app)
         return True
+
+    def _yield_to_app(self) -> bool:
+        if desktop_app_running():
+            self.loop.quit()
+            return False
+        return True
+
+
+def desktop_app_running() -> bool:
+    """True when the Promptloom desktop app (Electron) is up: it has its own icon."""
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            cmd = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            continue
+        if "promptloom-desktop" in cmd or ("electron" in cmd and "/promptloom/desktop" in cmd):
+            return True
+    return False
 
 
 def extension_active() -> bool:
@@ -343,7 +365,7 @@ def extension_active() -> bool:
 
 
 def main(argv: list[str]) -> int:
-    if extension_active():
+    if extension_active() or desktop_app_running():
         return 0  # the top bar already has one
     status = Path(argv[1]) if len(argv) > 1 else Path(
         os.environ.get("XDG_STATE_HOME", "~/.local/state")).expanduser() / "promptloom/status.json"

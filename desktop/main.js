@@ -255,5 +255,9 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('activate', () => createWindow(''));  // the dock icon on macOS
   app.on('window-all-closed', () => { /* stay in the menu bar / tray */ });
-  app.on('before-quit', () => { quitting = true; });
+  app.on('before-quit', () => {
+    quitting = true;
+    // On Linux the Python side has a lighter top bar icon; hand back to it.
+    if (process.platform === 'linux') runPromptloom(['tray', '--background']);
+  });
 }
