@@ -12,8 +12,9 @@ import traceback
 from pathlib import Path
 from urllib.parse import quote
 
-from . import __version__, config, extract
+from . import __version__, config, desktop, extract, gitlocal, launch, prs
 from .engine import Loom
+from .store import Store
 from .vault import obsidian_problem
 
 # Graph view colours so sessions, projects, themes and harnesses read apart.
@@ -21,14 +22,7 @@ GRAPH_GROUPS = [("Themes", 0xE5A50A), ("Projects", 0x33D17A), ("Harnesses", 0xC0
                 ("Sessions", 0x62A0EA), ("Keywords", 0xF66151)]
 
 
-def open_uri(uri: str) -> None:
-    """Hand a URL to the desktop, on whichever system this is."""
-    if sys.platform == "darwin":
-        subprocess.Popen(["open", uri])
-    elif sys.platform == "win32":
-        os.startfile(uri)  # noqa: S606 - a URL we built, not user input
-    else:
-        subprocess.Popen(["xdg-open", uri])
+open_uri = desktop.open_uri
 
 
 def cmd_init(args) -> int:
@@ -111,12 +105,16 @@ def cmd_watch(args) -> int:
                 print(f"summarised {result['enriched']}, insights={result['insights']}", flush=True)
         except Exception:
             traceback.print_exc()
+        try:
+            prs.tick(loom.cfg, loom.store.dir, loom.store.by_recency())
+        except Exception:  # GitHub being away must not stop the capture
+            traceback.print_exc()
         time.sleep(loom.cfg.get("poll_seconds", 5))
 
 
 def _config_stamp() -> list:
     stamps = []
-    paths = [config.CONFIG_FILE, config.PROVIDER_FILE]
+    paths = [config.CONFIG_FILE, config.PROVIDER_FILE, config.SETTINGS_FILE]
     if config.PLUGIN_DIR.is_dir():
         paths += sorted(config.PLUGIN_DIR.glob("*.py"))
     for path in paths:
@@ -348,6 +346,64 @@ def cmd_ui(args) -> int:
     return 0
 
 
+def cmd_app(args) -> int:
+    """The app in a window of its own, with a dock icon; serving it if needed."""
+    from . import server
+
+    cfg = config.load()
+    port = cfg.get("ui", {}).get("port", 8765)
+    if args.install:
+        if sys.platform != "linux":
+            print("A desktop entry is for Linux; on macOS use the menu bar app.", file=sys.stderr)
+            return 1
+        print(f"wrote {desktop.install_desktop_entry(port)}")
+        return 0
+    if args.uninstall:
+        desktop.remove_desktop_entry()
+        return 0
+    base = f"http://127.0.0.1:{port}/"
+    at = args.at_flag or args.at or ""
+    if at.startswith("http"):
+        url = at  # a URL handed over by the desktop entry's %u
+    else:
+        url = base + (f"#/{at.lstrip('#/')}" if at else "")
+    if args.webview:
+        desktop.run_webview(url)
+        return 0
+    if not _ui_running(base):
+        desktop.spawn([sys.executable, "-m", "promptloom", "ui", "--no-open"])
+        for _ in range(40):
+            if _ui_running(base):
+                break
+            time.sleep(0.25)
+    try:
+        how = desktop.open_window(cfg, url)
+    except desktop.DesktopError as exc:
+        print(f"promptloom: {exc}", file=sys.stderr)
+        return 1
+    print({"webview": "opened in a window", "chrome": "opened in a window (app mode)",
+           "browser": "opened in the browser"}[how] + f": {url}")
+    return 0
+
+
+def cmd_new(args) -> int:
+    """Start a tool on a prompt from the command line."""
+    cfg = config.load()
+    prompt = " ".join(args.text).strip() or sys.stdin.read().strip()
+    if not prompt:
+        print("nothing to send", file=sys.stderr)
+        return 1
+    try:
+        done = launch.start(cfg, config.STATE_DIR, args.tool, prompt, args.model or "",
+                            args.context or os.getcwd())
+    except (launch.LaunchError, desktop.DesktopError) as exc:
+        print(f"promptloom: {exc}", file=sys.stderr)
+        return 1
+    print(f"{done['tool']} in {done['dir']}" + (
+        " (the prompt is on the clipboard)" if done["how"] == "gui" else ""))
+    return 0
+
+
 def cmd_log(args) -> int:
     """Record a prompt from any tool, for the api harness to pick up."""
     from .harnesses.api import harness_name
@@ -398,6 +454,129 @@ def cmd_mcp(args) -> int:
     return mcp.run()
 
 
+def _records() -> list:
+    store = Store(config.STATE_DIR)
+    store.load()
+    return store.by_recency()
+
+
+def _print_prs(state: dict) -> None:
+    print(f"@{state.get('login', '?')} · checked {extract.local(state.get('checked', ''))}")
+    if state.get("error"):
+        print(f"error: {state['error']}")
+    by_project: dict[str, list[dict]] = {}
+    for pr in state["prs"]:
+        by_project.setdefault(pr["project"], []).append(pr)
+    for project, group in sorted(by_project.items()):
+        where = group[0]["checkout"] or "no local checkout"
+        print(f"\n{project}  ({group[0]['repo']} · {where})")
+        for pr in group:
+            whose = "mine" if pr["mine"] else ("review" if pr["asked"] else pr["author"])
+            notes = [n for n in ("draft" if pr["draft"] else "",
+                                 pr["checks"].lower(), pr["decision"].lower().replace("_", " "),
+                                 f"{pr['waiting']} new" if pr["waiting"] else "") if n]
+            print(f"  {whose:<10} #{pr['number']:<5} {pr['title'][:60]}"
+                  + (f"  [{', '.join(notes)}]" if notes else ""))
+            print(f"  {'':<10} {pr['url']}")
+    if not state["prs"]:
+        print("\nNo open pull requests.")
+
+
+def cmd_pr(args) -> int:
+    cfg = config.load()
+    state_dir = config.STATE_DIR
+    what = args.what or "list"
+    try:
+        if what in ("on", "off"):
+            config.save_settings("prs", {"enabled": what == "on"})
+            if what == "off":
+                print("Pull requests: off.")
+                return 0
+            cfg["prs"]["enabled"] = True
+            what = "check"
+        if what == "check":
+            state = prs.refresh(cfg, state_dir, _records())
+            _print_prs(state)
+            return 1 if state.get("error") else 0
+        if what == "list":
+            state = prs.load(state_dir)
+            if not state.get("checked"):
+                print("Not checked yet: `promptloom pr on`, or `promptloom pr check` once.")
+                return 1
+            _print_prs(state)
+            return 0
+        if not args.url:
+            print(f"promptloom pr {what} needs a pull request URL", file=sys.stderr)
+            return 2
+        if what == "review":
+            run = prs.start_review(cfg, state_dir, args.url, args.agent or "", args.add or "")
+            print(f"Reviewing in the background ({run['id']}); you will get a notification.")
+        elif what == "fix":
+            run = prs.start_fix(cfg, state_dir, args.url, args.agent or "", args.add or "",
+                                False if args.no_worktree else None)
+            print(f"Opened a terminal for the fix ({run['id']}).")
+        elif what == "worktree":
+            print(prs.worktree_for(state_dir, args.url))
+        elif what == "_run":  # the background half of `review`
+            run = prs.run_review(cfg, state_dir, args.url)
+            return 0 if run["status"] == "done" else 1
+        elif what == "_notify":  # waits for a click on a notification's button
+            prs.wait_for_action(cfg, state_dir, args.title, args.body,
+                                args.buttons or [], args.url, args.run or "")
+        else:
+            print(f"unknown action {what!r}", file=sys.stderr)
+            return 2
+    except (prs.PRError, gitlocal.GitError) as exc:
+        print(f"promptloom: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_worktree(args) -> int:
+    cfg = config.load()
+    paths = prs.local_checkouts(cfg, _records())
+    try:
+        if args.what == "add":
+            if not args.project or not args.branch:
+                print("promptloom worktree add PROJECT BRANCH [--base REF]", file=sys.stderr)
+                return 2
+            checkout = next((p for p in paths if p.name == args.project
+                             or str(p) == args.project), None)
+            if checkout is None:
+                print(f"no checkout called {args.project!r}", file=sys.stderr)
+                return 1
+            print(gitlocal.add(checkout, args.branch, args.base or ""))
+            return 0
+        listing = [item for item in gitlocal.overview(paths) if item["worktrees"]]
+        stale = [t for item in listing for t in item["worktrees"] if t["stale"]]
+        if args.what == "clean":
+            if not stale:
+                print("No stale worktrees.")
+                return 0
+            for tree in stale:
+                print(f"  {tree['path']}  ({tree['reason']})")
+            if not args.yes and input(f"Remove these {len(stale)}? [y/N] ").lower() != "y":
+                return 1
+            for result in gitlocal.clean(paths, [t["path"] for t in stale],
+                                         args.delete_branches):
+                print(("  " if result["ok"] else "  failed: ") + result["message"])
+            return 0
+        for item in listing:
+            print(f"{item['name']}  ({item['checkout']}, {item['branch'] or 'detached'})")
+            for tree in item["worktrees"]:
+                mark = "stale" if tree["stale"] else "keep "
+                print(f"  {mark}  {tree['branch'] or 'detached':<24} {tree['path']}")
+                print(f"         {tree['reason']}")
+        if not listing:
+            print("No worktrees besides the checkouts themselves.")
+        elif stale:
+            print(f"\n{len(stale)} stale: `promptloom worktree clean` removes them.")
+    except gitlocal.GitError as exc:
+        print(f"promptloom: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="promptloom", description=__doc__)
     parser.add_argument("--version", action="version", version=__version__)
@@ -443,6 +622,22 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-open", action="store_true", help="serve without opening a browser")
     p.set_defaults(fn=cmd_ui)
 
+    p = sub.add_parser("app", help="open the app in a window of its own (dock icon)")
+    p.add_argument("at", nargs="?", help="page to open: compose, search, prs, …")
+    p.add_argument("--at", dest="at_flag", help=argparse.SUPPRESS)
+    p.add_argument("--install", action="store_true", help="add it to the applications menu (Linux)")
+    p.add_argument("--uninstall", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--webview", action="store_true", help=argparse.SUPPRESS)
+    p.set_defaults(fn=cmd_app)
+
+    p = sub.add_parser("new", help="start a tool on a prompt: promptloom new -t claude 'fix …'")
+    p.add_argument("text", nargs="*", help="the prompt (or on stdin)")
+    p.add_argument("-t", "--tool", default="claude",
+                   help="claude, codex, copilot, hermes, pi, openclaw, vscode, cursor")
+    p.add_argument("-m", "--model")
+    p.add_argument("-C", "--context", help="project folder (default: the current one)")
+    p.set_defaults(fn=cmd_new)
+
     p = sub.add_parser("search", help="search every prompt and note")
     p.add_argument("query", nargs="*", help='words, plus filters: model:opus project:shop '
                    'harness:codex tag:bug theme:auth after:2026-01-01 before:2026-02-01')
@@ -463,6 +658,30 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("mcp", help="MCP server on stdio, so assistants can search your "
                    "prompt history").set_defaults(fn=cmd_mcp)
+
+    p = sub.add_parser("pr", help="pull requests: list, check, review or fix with an agent")
+    p.add_argument("what", nargs="?", choices=["list", "on", "off", "check", "review", "fix",
+                                              "worktree", "_run", "_notify"])
+    p.add_argument("url", nargs="?", help="the pull request")
+    p.add_argument("--agent", help="claude, codex or copilot (default: [prs] agent)")
+    p.add_argument("--add", help="anything to add to the agent's prompt")
+    p.add_argument("--no-worktree", action="store_true",
+                   help="fix in the checkout itself rather than a worktree of its own")
+    p.add_argument("--title", default="", help=argparse.SUPPRESS)
+    p.add_argument("--body", default="", help=argparse.SUPPRESS)
+    p.add_argument("--action", dest="buttons", action="append", help=argparse.SUPPRESS)
+    p.add_argument("--run", help=argparse.SUPPRESS)
+    p.set_defaults(fn=cmd_pr)
+
+    p = sub.add_parser("worktree", help="list worktrees, add one, or remove stale ones")
+    p.add_argument("what", nargs="?", default="list", choices=["list", "add", "clean"])
+    p.add_argument("project", nargs="?", help="add: the checkout (its folder name)")
+    p.add_argument("branch", nargs="?", help="add: the branch, new or existing")
+    p.add_argument("--base", help="add: where a new branch starts (default: HEAD)")
+    p.add_argument("--yes", action="store_true", help="clean: do not ask first")
+    p.add_argument("--delete-branches", action="store_true",
+                   help="clean: also delete the local branches (git refuses unmerged ones)")
+    p.set_defaults(fn=cmd_worktree)
 
     p = sub.add_parser("open", help="open a promptloom note in Obsidian")
     p.add_argument("what", nargs="?", default="home",

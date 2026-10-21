@@ -271,6 +271,29 @@ def timeline(records: list[Record], project: str, user: UserData) -> dict:
     }
 
 
+def tools_overview(records: list[Record], labels: dict[str, str]) -> list[dict]:
+    """Each tool (harness): how much it has been used, where, and with which models."""
+    by_tool: dict[str, dict] = {}
+    for record in records:
+        session = record.session
+        entry = by_tool.setdefault(session.harness, {
+            "harness": session.harness, "label": labels.get(session.harness, session.harness),
+            "sessions": 0, "prompts": 0, "projects": Counter(), "models": Counter(),
+            "first": "", "last": ""})
+        entry["sessions"] += 1
+        entry["prompts"] += len(session.prompts)
+        entry["projects"][session.project] += len(session.prompts)
+        entry["models"].update(p.model or UNKNOWN_MODEL for p in session.prompts)
+        if session.started:
+            entry["first"] = min(entry["first"] or session.started, session.started)
+        entry["last"] = max(entry["last"], session.updated)
+    out = sorted(by_tool.values(), key=lambda t: -t["prompts"])
+    for entry in out:
+        entry["projects"] = dict(entry["projects"].most_common())
+        entry["models"] = dict(entry["models"].most_common())
+    return out
+
+
 def models_overview(records: list[Record]) -> dict:
     """Which models touched which projects, and which models' work overlaps."""
     by_model: dict[str, dict] = {}

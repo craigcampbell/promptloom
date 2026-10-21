@@ -87,11 +87,26 @@ function modelColor(model) {
   return modelSlots[model] || 'var(--other)';
 }
 
+// Tools (harnesses) keep a colour of their own, apart from the models.
+const TOOL_SLOTS = 6;
+function toolColor(harness) {
+  const names = Object.keys(overview?.harnesses || {});
+  const i = names.indexOf(harness);
+  return i < 0 || i >= TOOL_SLOTS ? 'var(--other)' : `var(--h${i + 1})`;
+}
+function toolLabel(harness) {
+  return overview?.labels?.[harness] || harness;
+}
+function toolChip(harness) {
+  return `<span class="chip tool" data-tag="harness:${esc(harness)}"><span class="swatch" style="background:${toolColor(harness)}"></span>${esc(toolLabel(harness))}</span>`;
+}
+
 // Tags are "kind:value" for the ones worked out, bare for the ones people add.
 function chip(tag, opts = {}) {
   const [k, ...rest] = tag.includes(':') ? tag.split(':') : ['', tag];
   const v = rest.join(':');
-  const sw = k === 'model' ? `<span class="swatch" style="background:${modelColor(v)}"></span>` : '';
+  const sw = k === 'model' ? `<span class="swatch" style="background:${modelColor(v)}"></span>` :
+    k === 'harness' ? `<span class="swatch" style="background:${toolColor(v)}"></span>` : '';
   const x = opts.remove ? ` <span class="x" data-remove="${esc(tag)}" title="Remove">×</span>` : '';
   return `<span class="chip${k ? '' : ' user'}" data-tag="${esc(tag)}">${sw}` +
     (k ? `<span class="k">${esc(k)}</span>${esc(v)}` : `#${esc(v)}`) + x + '</span>';
@@ -175,6 +190,7 @@ async function loadOverview() {
   $('#foot').innerHTML = `${overview.sessions} sessions<br>${overview.prompts} prompts<br>` +
     `${overview.notes} notes` +
     (overview.waiting ? `<br><br>Summaries paused: ${esc(overview.waiting)}` : '');
+  $('#draft-count').textContent = overview.drafts ? overview.drafts : '';
 }
 
 // views
@@ -185,12 +201,15 @@ views.home = async () => {
   const o = overview;
   const active = o.active;
   main.innerHTML = `
-    <h1>Promptloom</h1>
-    <p class="muted">Every prompt you've typed into ${Object.values(o.harnesses).map(esc).join(', ') || 'your AI tools'}, in one place.</p>
-    <form class="search" id="q" style="margin:18px 0">
-      <input name="q" placeholder="Search prompts and notes…  try  model:opus  project:name  tag:idea" autofocus>
-      <button class="primary">Search</button>
-    </form>
+    <div class="hero">
+      <h1>Promptloom</h1>
+      <p class="muted">Every prompt you've typed into ${Object.keys(o.harnesses).map(toolChip).join(' ') || 'your AI tools'}, in one place.</p>
+      <form class="search" id="q">
+        <input name="q" placeholder="Search prompts and notes…  try  model:opus  project:name  tag:idea" autofocus>
+        <button class="primary">Search</button>
+      </form>
+      <div class="row start" id="start"><span class="muted small">Start a prompt in</span></div>
+    </div>
     <div class="stats">
       <div class="card stat"><div class="n">${o.sessions}</div><div class="l">sessions</div></div>
       <div class="card stat"><div class="n">${o.prompts}</div><div class="l">prompts</div></div>
@@ -215,6 +234,12 @@ views.home = async () => {
     e.preventDefault();
     location.hash = searchHref(e.target.q.value);
   };
+  api('tools').then(t => {
+    const have = t.tools.filter(x => x.available);
+    $('#start').insertAdjacentHTML('beforeend', have.map(x =>
+      `<a href="#/compose?tool=${encodeURIComponent(x.name)}"><button>${esc(x.label)}</button></a>`).join('') +
+      `<a href="#/drafts" class="small">${o.drafts ? `${o.drafts} draft${o.drafts > 1 ? 's' : ''} waiting` : 'drafts'}</a>`);
+  }).catch(() => {});
   $('#cap').onsubmit = async e => {
     e.preventDefault();
     const text = e.target.text.value.trim();
@@ -228,7 +253,7 @@ views.home = async () => {
 function sessionItem(s) {
   return `<div class="item">
     <a href="${sessionHref(s.key)}"><h3>${esc(s.title)}</h3></a>
-    <div class="meta">${esc(overview.labels[s.harness] || s.harness)} · <a href="${projectHref(s.project)}">${esc(s.project)}</a> · ${s.prompts} prompts · ${ago(s.updated)}</div>
+    <div class="meta">${toolChip(s.harness)} <a href="${projectHref(s.project)}">${esc(s.project)}</a> · ${s.prompts} prompts · ${ago(s.updated)}</div>
     ${s.summary ? `<div class="text small">${esc(s.summary)}</div>` : ''}
     ${chips(s.tags.filter(t => !t.startsWith('project:') && !t.startsWith('harness:')))}
   </div>`;
@@ -369,10 +394,11 @@ views.projects = async () => {
     <h1>Projects</h1>
     <p class="muted">Each working directory you've used an AI tool in. The bar shows which models did the work.</p>
     ${legend(Object.keys(modelSlots))}
-    <table><thead><tr><th>Project</th><th>Models</th><th class="num">Sessions</th><th class="num">Prompts</th><th>Active</th></tr></thead>
+    <table><thead><tr><th>Project</th><th>Models</th><th>Tools</th><th class="num">Sessions</th><th class="num">Prompts</th><th>Active</th></tr></thead>
     <tbody>${projects.map(p => `<tr>
       <td><a href="${projectHref(p.name)}">${esc(p.name)}</a>${p.app ? '' : ' <span class="muted small">(folder)</span>'}</td>
       <td style="min-width:160px">${modelBar(p.models)}<div class="small muted">${Object.keys(p.models).length} model${Object.keys(p.models).length === 1 ? '' : 's'}</div></td>
+      <td><div class="chips" data-no-search>${Object.keys(p.harnesses).map(toolChip).join('')}</div></td>
       <td class="num">${p.sessions}</td><td class="num">${p.prompts}</td>
       <td class="small muted">${ago(p.first)} → ${ago(p.last)}</td></tr>`).join('')}</tbody></table>`;
 };
@@ -438,7 +464,9 @@ views.project = async (params, name) => {
   const models = Object.keys(info.models);
   main.innerHTML = `
     <div class="muted small"><a href="#/projects">Projects</a></div>
-    <h1>${esc(p.project)}</h1>
+    <div class="row"><h1 class="grow">${esc(p.project)}</h1>
+      <a href="#/compose?context=${encodeURIComponent(info.contexts[0] || '')}"><button class="primary">New prompt here</button></a>
+      ${info.contexts[0] ? `<button id="proj-term">Terminal</button>` : ''}</div>
     <div class="muted small">${info.contexts.map(esc).join(', ')}</div>
     <div class="stats" style="margin-top:14px">
       <div class="card stat"><div class="n">${info.sessions}</div><div class="l">sessions</div></div>
@@ -457,7 +485,7 @@ views.project = async (params, name) => {
           <td><span class="swatch" style="background:${modelColor(m)}"></span> ${esc(m)}</td><td class="num">${n}</td></tr>`).join('')}</tbody></table>
         <h2>Tools</h2>
         <table><tbody>${Object.entries(info.harnesses).map(([h, n]) => `<tr>
-          <td>${esc(overview.labels[h] || h)}</td><td class="num">${n}</td></tr>`).join('')}</tbody></table>
+          <td><span class="swatch" style="background:${toolColor(h)}"></span> ${esc(toolLabel(h))}</td><td class="num">${n}</td></tr>`).join('')}</tbody></table>
       </div>
       <div>
         <h2>Model changes</h2>
@@ -480,6 +508,7 @@ views.project = async (params, name) => {
     <h2>Sessions, oldest first</h2>
     <div class="list">${p.sessions.map(sessionItem).join('')}</div>`;
   $('#chart').append(activityChart(p.days));
+  if ($('#proj-term')) $('#proj-term').onclick = () => api('open-terminal', {context: info.contexts[0]}).then(() => toast('Opening a terminal…'), err => toast(err.message));
   // The chips above search for the word; links between projects are by word.
   for (const el of main.querySelectorAll('.chip[data-tag]'))
     if (!el.dataset.tag.includes(':')) el.onclick = e => { e.stopPropagation(); location.hash = searchHref(el.dataset.tag); };
@@ -497,8 +526,9 @@ views.models = async () => {
       <h3><span class="swatch" style="background:${modelColor(x.model)}"></span> ${esc(x.model)}</h3>
       <div class="small muted">${x.prompts} prompts · ${Object.keys(x.projects).length} projects</div>
       <div class="small muted">${x.first ? `${ago(x.first)} → ${ago(x.last)}` : ''}</div>
-      <div class="small">${Object.entries(x.harnesses).map(([h, n]) => `${esc(overview.labels[h] || h)} ${n}`).join(' · ')}</div>
-      <p class="small" style="margin-top:6px"><a href="${searchHref('model:' + x.model)}">See its prompts</a></p>
+      <div class="chips" data-no-search>${Object.entries(x.harnesses).map(([h, n]) => `${toolChip(h)}<span class="small muted">${n}</span>`).join('')}</div>
+      <p class="small" style="margin-top:8px"><a href="${searchHref('model:' + x.model)}">See its prompts</a> ·
+        <a href="#/compose?model=${encodeURIComponent(x.model)}&harness=${encodeURIComponent(Object.keys(x.harnesses)[0] || '')}">New prompt with it</a></p>
     </div>`).join('')}</div>
     <h2>Projects × models</h2>
     <p class="muted small">Prompts each model answered in each project. Darker is more.</p>
@@ -932,6 +962,471 @@ views.note = async (params, id) => {
 };
 
 // routing
+
+// tools (harnesses)
+
+views.tools = async () => {
+  const t = await api('tools');
+  const stats = t.stats;
+  const models = [...new Set(stats.flatMap(x => Object.keys(x.models)))].filter(m => m !== 'unknown');
+  const max = Math.max(1, ...stats.flatMap(x => Object.values(x.models)));
+  const byHarness = Object.fromEntries(t.tools.map(x => [x.harness, x]));
+  main.innerHTML = `
+    <h1>Tools</h1>
+    <p class="muted">The AI tools you work in, apart from the models behind them: how much each has done, where, and with what.</p>
+    <div class="cards">${stats.map(x => `<div class="card">
+      <h3><span class="swatch" style="background:${toolColor(x.harness)}"></span> ${esc(x.label)}</h3>
+      <div class="small muted">${x.sessions} sessions · ${x.prompts} prompts · ${Object.keys(x.projects).length} projects</div>
+      <div class="small muted">${x.first ? `${ago(x.first)} → ${ago(x.last)}` : ''}</div>
+      ${modelBar(x.models)}
+      <div class="small" style="margin-top:4px">${Object.entries(x.models).slice(0, 4).map(([m, n]) => `<span class="swatch" style="background:${modelColor(m)}"></span> ${esc(m)} ${n}`).join(' · ')}</div>
+      <p class="small" style="margin-top:8px"><a href="${searchHref('harness:' + x.harness)}">See its prompts</a>
+        ${byHarness[x.harness]?.available ? ` · <a href="#/compose?tool=${encodeURIComponent(byHarness[x.harness].name)}">New prompt</a>` : ''}</p>
+    </div>`).join('') || '<p class="empty">Nothing captured yet.</p>'}</div>
+    <h2>Installed here</h2>
+    <div class="chips">${t.tools.map(x => `<span class="chip ${x.available ? '' : 'off'}" title="${x.available ? esc(x.program) : 'not found on PATH'}">${esc(x.label)}${x.available ? '' : ' · not installed'}</span>`).join('')}</div>
+    <p class="small muted">Only installed tools are offered when you start a prompt. Add others, or change how one is started, under <code>[tools.agents]</code> in the config.</p>
+    <h2>Tools × models</h2>
+    <p class="muted small">Prompts each tool sent to each model.</p>
+    <div style="overflow:auto"><table class="matrix"><thead><tr><th>Tool</th>${models.map(n =>
+      `<th class="small" title="${esc(n)}"><span class="swatch" style="background:${modelColor(n)}"></span> ${esc(n.length > 18 ? n.slice(0, 17) + '…' : n)}</th>`).join('')}</tr></thead>
+    <tbody>${stats.map(x => `<tr><td><span class="swatch" style="background:${toolColor(x.harness)}"></span> ${esc(x.label)}</td>${models.map(m => {
+      const n = x.models[m] || 0;
+      const a = n ? 0.15 + 0.85 * n / max : 0;
+      return `<td class="cell"><div style="background:${n ? `color-mix(in oklab, ${toolColor(x.harness)} ${Math.round(a * 100)}%, var(--surface-1))` : 'transparent'}">${n || ''}</div></td>`;
+    }).join('')}</tr>`).join('')}</tbody></table></div>
+    <h2>Tools × projects</h2>
+    <table><thead><tr><th>Tool</th><th>Projects, most prompts first</th></tr></thead><tbody>${stats.map(x => `<tr>
+      <td><span class="swatch" style="background:${toolColor(x.harness)}"></span> ${esc(x.label)}</td>
+      <td class="small">${Object.entries(x.projects).map(([p, n]) => `<a href="${projectHref(p)}">${esc(p)}</a> <span class="muted">${n}</span>`).join(' · ')}</td></tr>`).join('')}</tbody></table>`;
+};
+
+// composing a prompt
+
+let composeTimer = 0;
+
+views.compose = async params => {
+  const t = await api('tools');
+  let draft = null;
+  if (params.get('draft')) {
+    try { draft = await api('draft?id=' + encodeURIComponent(params.get('draft'))); } catch { draft = null; }
+  }
+  const installed = t.tools.filter(x => x.available);
+  const byName = Object.fromEntries(t.tools.map(x => [x.name, x]));
+  const wantHarness = params.get('harness');
+  let tool = draft?.tool || params.get('tool') ||
+    (wantHarness && installed.find(x => x.harness === wantHarness)?.name) ||
+    localStorage.getItem('pl.tool') || installed[0]?.name || '';
+  if (!byName[tool]?.available) tool = installed[0]?.name || '';
+  const model = draft?.model ?? params.get('model') ?? '';
+  const context = draft?.context || params.get('context') || t.contexts[0]?.context || '';
+  const weaver = t.weavers.find(w => w.default)?.id || t.weavers[0]?.id || '';
+  const contextKnown = t.contexts.some(c => c.context === context);
+
+  main.innerHTML = `
+    <div class="row"><h1 class="grow">${draft ? 'Draft' : 'New prompt'}</h1>
+      <span class="muted small" id="saved">${draft ? `saved ${ago(draft.updated)}` : 'not saved yet'}</span></div>
+    <div class="compose">
+      <div class="editor">
+        <textarea id="body" placeholder="What do you want done? Write it the way you'd say it; weave it afterwards if you want a second pair of eyes on it.">${esc(draft?.body || '')}</textarea>
+        <div class="row small muted" id="status">${draft?.sent ? `Sent to ${esc(draft.sent_with)} ${ago(draft.sent)}.` : ''}</div>
+        ${draft?.versions?.length ? `<details class="versions"><summary class="small">Woven ${draft.versions.length} time${draft.versions.length > 1 ? 's' : ''}</summary>
+          ${draft.versions.slice().reverse().map((v, i) => `<div class="version">
+            <div class="meta">${esc(v.by)} · ${ago(v.at)}${v.notes ? ` · ${esc(v.notes)}` : ''}</div>
+            <div class="row small"><button data-restore="${draft.versions.length - 1 - i}">Put back what I had before this</button></div></div>`).join('')}</details>` : ''}
+      </div>
+      <div class="side">
+        <div class="field"><div class="label">Tool</div><div class="seg vertical">${installed.map(x =>
+          `<label title="${esc(x.program)}"><input type="radio" name="tool" value="${esc(x.name)}"${x.name === tool ? ' checked' : ''}>
+            <span class="grow">${esc(x.label)}</span>${x.gui ? '<span class="muted small">prompt copied</span>' : ''}</label>`).join('') ||
+          '<div class="small muted">No tool found. Install Claude Code, Codex, Copilot, Hermes or pi, or add one under [tools.agents].</div>'}</div>
+          ${t.tools.some(x => !x.available) ? `<div class="small muted" style="margin-top:4px">Not installed: ${t.tools.filter(x => !x.available).map(x => esc(x.label)).join(', ')}</div>` : ''}</div>
+        <div class="field"><div class="label">Model <span class="muted">(blank: the tool's default)</span></div>
+          <input id="model" list="models" value="${esc(model)}" placeholder="default">
+          <datalist id="models"></datalist></div>
+        <div class="field"><div class="label">Project</div>
+          <select id="context-pick">${t.contexts.map(c => `<option value="${esc(c.context)}"${c.context === context ? ' selected' : ''}>${esc(c.project)} — ${esc(c.context)}</option>`).join('')}
+            <option value=""${contextKnown ? '' : ' selected'}>Another folder…</option></select>
+          <input id="context" value="${esc(context)}" placeholder="/path/to/project"${contextKnown ? ' hidden' : ''}></div>
+        <div class="field"><div class="label">Weave it into a better prompt</div>
+          ${t.weavers.length ? `<div class="row"><select id="weaver" class="grow">${t.weavers.map(w => `<option value="${esc(w.id)}"${w.id === weaver ? ' selected' : ''}>${esc(w.label)}</option>`).join('')}</select>
+            <button id="weave">Weave</button></div>
+            <div class="small muted">Sends the draft to that model and asks for a stronger prompt back: goal, what done looks like, constraints. You keep both.</div>`
+            : '<div class="small muted">No model to weave with: start Ollama, or store a key with <code>promptloom provider set</code>.</div>'}
+          <div id="weave-notes" class="small notes" hidden></div></div>
+        <div class="actions">
+          <button class="primary" id="go"${tool ? '' : ' disabled'}>Open in ${esc(byName[tool]?.label || 'a tool')}</button>
+          <button id="save">Save draft</button>
+          <button id="copy">Copy</button>
+          ${draft ? '<button class="danger" id="delete">Delete</button>' : ''}
+        </div>
+      </div>
+    </div>`;
+
+  const body = $('#body');
+  const form = {
+    tool: () => main.querySelector('input[name=tool]:checked')?.value || '',
+    model: () => $('#model').value.trim(),
+    context: () => $('#context').value.trim(),
+  };
+  const fillModels = () => {
+    const x = byName[form.tool()];
+    $('#models').innerHTML = (x?.models || []).map(m => `<option value="${esc(m)}">`).join('');
+    $('#go').textContent = `Open in ${x?.label || 'a tool'}`;
+    $('#go').disabled = !x;
+    $('#model').disabled = x ? !x.takes_model : false;
+    $('#model').placeholder = x && !x.takes_model ? 'picked inside the tool' : 'default';
+  };
+  fillModels();
+  main.querySelectorAll('input[name=tool]').forEach(r => { r.onchange = () => { fillModels(); localStorage.setItem('pl.tool', form.tool()); queueSave(); }; });
+  $('#context-pick').onchange = e => {
+    const v = e.target.value;
+    $('#context').hidden = Boolean(v);
+    if (v) $('#context').value = v; else $('#context').focus();
+    queueSave();
+  };
+
+  let saving = false;
+  const save = async () => {
+    const text = body.value;
+    if (!text.trim() && !draft) return null;
+    saving = true;
+    try {
+      draft = await api('drafts', {id: draft?.id, body: text, tool: form.tool(), model: form.model(), context: form.context()});
+      $('#saved').textContent = `saved ${ago(draft.updated)}`;
+      if (!params.get('draft')) history.replaceState(null, '', `#/compose?draft=${encodeURIComponent(draft.id)}`);
+      loadOverview().catch(() => {});
+    } catch (err) {
+      $('#saved').textContent = `not saved: ${err.message}`;
+    } finally { saving = false; }
+    return draft;
+  };
+  const queueSave = () => { clearTimeout(composeTimer); composeTimer = setTimeout(save, 700); $('#saved').textContent = 'typing…'; };
+  body.oninput = queueSave;
+  $('#model').oninput = queueSave;
+  $('#context').oninput = queueSave;
+  $('#save').onclick = async () => { clearTimeout(composeTimer); await save(); toast('Saved'); };
+  $('#copy').onclick = () => copy(body.value);
+  if ($('#delete')) $('#delete').onclick = async () => {
+    if (!confirm('Delete this draft?')) return;
+    await api('drafts', {delete: draft.id});
+    location.hash = '#/drafts';
+  };
+  main.querySelectorAll('[data-restore]').forEach(b => {
+    b.onclick = () => { body.value = draft.versions[+b.dataset.restore].before; queueSave(); toast('Put back'); };
+  });
+  if ($('#weave')) $('#weave').onclick = async () => {
+    if (!body.value.trim()) { toast('Write something first'); return; }
+    clearTimeout(composeTimer);
+    const btn = $('#weave');
+    btn.disabled = true; btn.textContent = 'Weaving…';
+    try {
+      await save();
+      draft = await api('weave', {draft: draft?.id, body: body.value, weaver: $('#weaver').value, tool: form.tool(), model: form.model(), context: form.context()});
+      body.value = draft.body;
+      const last = draft.versions[draft.versions.length - 1];
+      const notes = $('#weave-notes');
+      notes.hidden = false;
+      notes.innerHTML = `<strong>Woven by ${esc(last.by)}.</strong> ${esc(last.notes || '')} <button class="link" id="undo-weave">Put back what I had</button>`;
+      $('#undo-weave').onclick = () => { body.value = last.before; queueSave(); notes.hidden = true; };
+      $('#saved').textContent = `saved ${ago(draft.updated)}`;
+      if (!params.get('draft')) history.replaceState(null, '', `#/compose?draft=${encodeURIComponent(draft.id)}`);
+    } catch (err) {
+      toast(err.message);
+    } finally { btn.disabled = false; btn.textContent = 'Weave'; }
+  };
+  $('#go').onclick = async () => {
+    if (!body.value.trim()) { toast('Write something first'); return; }
+    clearTimeout(composeTimer);
+    const btn = $('#go');
+    btn.disabled = true;
+    try {
+      await save();
+      if (byName[form.tool()]?.gui) await navigator.clipboard.writeText(body.value).catch(() => {});
+      const done = await api('launch', {tool: form.tool(), prompt: body.value, model: form.model(), context: form.context(), draft: draft?.id});
+      $('#status').textContent = done.how === 'gui'
+        ? `Opened ${done.tool} on ${done.dir}; the prompt is on your clipboard, paste it in.`
+        : `Opened ${done.tool} in a terminal in ${done.dir}.`;
+      toast(`Opened ${done.tool}`);
+      loadOverview().catch(() => {});
+    } catch (err) {
+      toast(err.message);
+    } finally { btn.disabled = false; }
+  };
+  if (!draft?.body) body.focus();
+};
+
+// drafts
+
+views.drafts = async () => {
+  const drafts = await api('drafts');
+  const t = await api('tools');
+  const labels = Object.fromEntries(t.tools.map(x => [x.name, x.label]));
+  const item = d => `<div class="item">
+    <div class="row"><a class="grow" href="#/compose?draft=${encodeURIComponent(d.id)}"><h3>${esc(d.title)}</h3></a>
+      <a href="#/compose?draft=${encodeURIComponent(d.id)}"><button>${d.sent ? 'Open' : 'Continue'}</button></a></div>
+    <div class="meta">${ago(d.updated)}${d.tool ? ` · ${esc(labels[d.tool] || d.tool)}` : ''}${d.model ? ` · ${esc(d.model)}` : ''}${d.context ? ` · ${esc(d.context.split('/').pop())}` : ''}${d.versions?.length ? ` · woven ${d.versions.length}×` : ''}${d.sent ? ` · sent to ${esc(d.sent_with)} ${ago(d.sent)}` : ''}</div>
+    <div class="text small clip">${esc(d.body.slice(0, 300))}${d.body.length > 300 ? '…' : ''}</div></div>`;
+  const open = drafts.filter(d => !d.sent), sent = drafts.filter(d => d.sent);
+  main.innerHTML = `
+    <div class="row"><h1 class="grow">Drafts</h1><a href="#/compose"><button class="primary">New prompt</button></a></div>
+    <p class="muted">Prompts you are still working on, or don't want to lose before they go to a tool. They save as you type.</p>
+    <div class="list">${open.map(item).join('') || '<p class="empty">Nothing in progress.</p>'}</div>
+    ${sent.length ? `<h2>Sent</h2><div class="list">${sent.map(item).join('')}</div>` : ''}`;
+};
+
+// pull requests
+
+let prFilter = 'all';
+let prTimer = 0;
+const PR_FILTERS = {all: 'All', mine: 'Mine', others: 'Others', attention: 'Needs you'};
+
+function badge(text, kind = '') {
+  return `<span class="badge ${kind}">${esc(text)}</span>`;
+}
+
+function prBadges(p) {
+  const tone = s => ['SUCCESS', 'APPROVED'].includes(s) ? 'ok' :
+    ['FAILURE', 'ERROR', 'CHANGES_REQUESTED'].includes(s) ? 'bad' : '';
+  return [
+    p.draft ? badge('draft') : '',
+    p.checks ? badge('checks ' + p.checks.toLowerCase(), tone(p.checks)) : '',
+    p.decision ? badge(p.decision.toLowerCase().replace(/_/g, ' '), tone(p.decision)) : '',
+    p.waiting ? badge(`${p.waiting} new`, 'hot') : '',
+    p.asked ? badge('review requested', 'hot') : '',
+  ].join('');
+}
+
+function feedbackList(p) {
+  if (!p.feedback.length) return '';
+  const where = f => f.kind === 'line' ? `${f.path}${f.line ? ':' + f.line : ''}` :
+    f.kind === 'review' ? (f.state === 'CHANGES_REQUESTED' ? 'requested changes' : 'review') : 'comment';
+  return `<details class="feedback"${p.waiting ? ' open' : ''}><summary class="small">${p.feedback.length} open comment${p.feedback.length > 1 ? 's' : ''}</summary>
+    ${p.feedback.map(f => `<div class="fb${f.new ? ' new' : ''}"><div class="meta"><strong>${esc(f.author)}</strong> · ${esc(where(f))} · ${ago(f.at)}
+      ${f.new ? badge('new', 'hot') : ''} <a href="${esc(f.url)}" target="_blank" rel="noopener">open</a></div>
+      <div class="text small">${esc(f.body.slice(0, 600))}${f.body.length > 600 ? '…' : ''}</div></div>`).join('')}</details>`;
+}
+
+function prItem(p) {
+  return `<div class="item pr">
+    <div class="row"><a class="grow" href="${esc(p.url)}" target="_blank" rel="noopener"><h3>#${p.number} ${esc(p.title)}</h3></a>
+      <button data-review="${esc(p.url)}">Review…</button>
+      ${p.mine ? `<button data-fix="${esc(p.url)}"${p.waiting ? ' class="primary"' : ''}>Fix…</button>` : ''}</div>
+    <div class="meta">${p.mine ? 'yours' : 'by ' + esc(p.author)} · ${esc(p.head)} → ${esc(p.base)} · +${p.additions} −${p.deletions} in ${p.files} files · updated ${ago(p.updated)}
+      ${p.sessions.map(s => ` · from <a href="${sessionHref(s.key)}">${esc(s.title)}</a>`).join('')}</div>
+    <div class="chips">${prBadges(p)}</div>
+    ${feedbackList(p)}</div>`;
+}
+
+const RUN_STATUS = {running: 'running…', done: 'done', failed: 'failed', opened: 'opened in a terminal'};
+
+function runItem(r, labels) {
+  return `<div class="item run" data-run="${esc(r.id)}">
+    <div class="row"><div class="grow"><strong>${r.kind === 'review' ? 'Review' : 'Fix'}</strong> of
+      <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.repo)}#${r.number}</a> ${esc(r.title)}</div>
+      ${badge(RUN_STATUS[r.status] || r.status, r.status === 'failed' ? 'bad' : r.status === 'done' ? 'ok' : '')}
+      ${r.has_output ? `<button data-read="${esc(r.id)}">Read</button>` : ''}</div>
+    <div class="meta">${esc(labels[r.agent] || r.agent)} · ${ago(r.started)}${r.extra ? ` · added: “${esc(r.extra.slice(0, 80))}”` : ''}</div>
+    ${r.error ? `<div class="small" style="color:var(--danger)">${esc(r.error)}</div>` : ''}
+    <div class="out" hidden></div></div>`;
+}
+
+async function readRun(el, id) {
+  const out = $('.out', el);
+  if (!out.hidden) { out.hidden = true; return; }
+  const run = await api(`pr-run?id=${encodeURIComponent(id)}`);
+  out.innerHTML = `<div class="note-view">${markdown(run.text)}</div>
+    <div class="row small"><button data-copy-run>Copy</button></div>`;
+  $('[data-copy-run]', out).onclick = () => copy(run.text);
+  out.hidden = false;
+}
+
+function prDialog(pr, kind, d) {
+  const usable = d.agents.filter(a => a.available);
+  const chosen = usable.some(a => a.name === d.settings.agent) ? d.settings.agent : usable[0]?.name;
+  const dlg = document.createElement('dialog');
+  dlg.className = 'dialog';
+  dlg.innerHTML = `<form>
+    <h2>${kind === 'fix' ? 'Fix' : 'Review'} ${esc(pr.repo)}#${pr.number}</h2>
+    <p class="muted small">${esc(pr.title)}</p>
+    <div class="field"><div class="label">Agent</div><div class="seg">${d.agents.map(a =>
+      `<label class="${a.available ? '' : 'off'}"${a.available ? '' : ' title="Not installed"'}>
+        <input type="radio" name="agent" value="${esc(a.name)}"${a.name === chosen ? ' checked' : ''}${a.available ? '' : ' disabled'}>
+        ${esc(a.label)}${a.available ? '' : ' <span class="muted">(not installed)</span>'}</label>`).join('')}</div></div>
+    ${kind === 'fix' ? (pr.checkout
+      ? `<label class="toggle"><input type="checkbox" name="worktree"${d.settings.worktrees ? ' checked' : ''}> Work in a worktree of its own, not in ${esc(pr.checkout)}</label>`
+      : `<p class="small muted">No local checkout: it will be cloned first.</p>`) : ''}
+    <div class="field"><div class="label">Add to the prompt</div>
+      <textarea name="extra" rows="4" placeholder="${kind === 'fix' ? 'e.g. keep the public API as it is; ignore the naming comments' : 'e.g. focus on the database migrations; we target Python 3.11'}"></textarea></div>
+    <details><summary class="small">Show the prompt</summary><pre class="prompt-box" data-preview>…</pre></details>
+    <p class="small muted">${kind === 'fix'
+      ? 'A terminal opens with the agent working on it, so you can watch and step in. It commits and pushes, and asks before replying on GitHub.'
+      : 'It runs in the background with read-only access; you get a notification when it is done. Nothing is posted to GitHub.'}</p>
+    <div class="row" style="justify-content:flex-end"><button type="button" data-cancel>Cancel</button>
+      <button class="primary" data-go${chosen ? '' : ' disabled'}>${kind === 'fix' ? 'Open a terminal and fix' : 'Start the review'}</button></div>
+  </form>`;
+  document.body.append(dlg);
+  const form = $('form', dlg);
+  const values = () => ({
+    url: pr.url, agent: form.agent?.value || chosen, extra: form.extra.value,
+    worktree: form.worktree ? form.worktree.checked : false,
+  });
+  let pending = 0;
+  const preview = () => {
+    clearTimeout(pending);
+    pending = setTimeout(async () => {
+      const v = values();
+      const q = new URLSearchParams({kind, url: v.url, extra: v.extra, worktree: v.worktree ? '1' : '0'});
+      $('[data-preview]', dlg).textContent = (await api('pr-prompt?' + q)).prompt;
+    }, 250);
+  };
+  $('details', dlg).addEventListener('toggle', preview);
+  form.addEventListener('input', () => { if ($('details', dlg).open) preview(); });
+  $('[data-cancel]', dlg).onclick = () => dlg.close();
+  form.onsubmit = async e => {
+    e.preventDefault();
+    try {
+      await api(kind === 'fix' ? 'pr-fix' : 'pr-review', values());
+      dlg.close();
+      toast(kind === 'fix' ? 'Opening a terminal…' : 'Review started');
+      views.prs(new URLSearchParams());
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.showModal();
+  form.extra.focus();
+}
+
+views.prs = async params => {
+  clearTimeout(prTimer);
+  const d = await api('prs');
+  const s = d.settings;
+  const labels = Object.fromEntries(d.agents.map(a => [a.name, a.label]));
+  const head = `<div class="row"><h1 class="grow">Pull requests</h1>
+    <label class="switch"><input type="checkbox" id="pr-on"${s.enabled ? ' checked' : ''}><span class="knob"></span>Watch pull requests</label></div>`;
+  if (!s.enabled) {
+    main.innerHTML = head + `
+      <p class="muted">Your open pull requests and the ones others opened in your repositories, per project. Have Claude Code, Codex or Copilot review one, with anything you want added to the prompt, and get a notification when someone comments on yours, with a button to fix it.</p>
+      <p class="muted">It uses the GitHub CLI (<code>gh</code>), signed in, and checks every ${s.poll_minutes} minutes while it is on.</p>`;
+  } else {
+    const shown = d.prs.filter(p => prFilter === 'all' || (prFilter === 'mine' ? p.mine :
+      prFilter === 'others' ? !p.mine : (p.mine && p.waiting) || p.asked));
+    const groups = {};
+    for (const p of shown) (groups[p.project] ||= []).push(p);
+    main.innerHTML = head + `
+      <div class="row small settings">
+        <label class="toggle"><input type="checkbox" id="pr-notify"${s.notify ? ' checked' : ''}> Notify me about new comments</label>
+        <label class="toggle">Agent <select id="pr-agent">${d.agents.map(a =>
+          `<option value="${esc(a.name)}"${a.name === s.agent ? ' selected' : ''}${a.available ? '' : ' disabled'}>${esc(a.label)}${a.available ? '' : ' (not installed)'}</option>`).join('')}</select></label>
+        <label class="toggle"><input type="checkbox" id="pr-worktrees"${s.worktrees ? ' checked' : ''}> Fixes use a worktree</label>
+        <span class="grow"></span>
+        <span class="muted">${d.checking ? 'Checking GitHub…' : d.checked ? `Checked ${ago(d.checked)}${d.login ? ' as @' + esc(d.login) : ''}` : 'Not checked yet'}</span>
+        <button id="pr-check"${d.checking ? ' disabled' : ''}>Check now</button>
+      </div>
+      ${d.error ? `<div class="banner">${esc(d.error)}</div>` : ''}
+      <div class="seg filters">${Object.entries(PR_FILTERS).map(([k, v]) =>
+        `<button data-filter="${k}" class="${k === prFilter ? 'on' : ''}">${v}</button>`).join('')}</div>
+      ${Object.entries(groups).map(([project, list]) => `<h2>${esc(project)}
+        <span class="muted small">${esc(list[0].repo)}${list[0].checkout ? ' · ' + esc(list[0].checkout) : ' · no local checkout'}</span></h2>
+        <div class="list">${list.map(prItem).join('')}</div>`).join('') ||
+        `<p class="empty">${d.checked ? 'No open pull requests here.' : 'Checking GitHub for the first time…'}</p>`}
+      ${d.runs.length ? `<h2>Reviews and fixes</h2><div class="list">${d.runs.map(r => runItem(r, labels)).join('')}</div>` : ''}`;
+    const save = body => api('pr-settings', body).catch(err => toast(err.message));
+    $('#pr-notify').onchange = e => save({notify: e.target.checked});
+    $('#pr-worktrees').onchange = e => save({worktrees: e.target.checked});
+    $('#pr-agent').onchange = e => save({agent: e.target.value}).then(() => toast('Default agent saved'));
+    $('#pr-check').onclick = async () => { await api('pr-check', {}); views.prs(params); };
+    main.querySelectorAll('[data-filter]').forEach(b => { b.onclick = () => { prFilter = b.dataset.filter; views.prs(params); }; });
+    const byUrl = Object.fromEntries(d.prs.map(p => [p.url, p]));
+    main.querySelectorAll('[data-review]').forEach(b => { b.onclick = () => prDialog(byUrl[b.dataset.review], 'review', d); });
+    main.querySelectorAll('[data-fix]').forEach(b => { b.onclick = () => prDialog(byUrl[b.dataset.fix], 'fix', d); });
+    main.querySelectorAll('[data-read]').forEach(b => { b.onclick = () => readRun(b.closest('.run'), b.dataset.read); });
+    const wanted = params.get('run');
+    const el = wanted && main.querySelector(`.run[data-run="${CSS.escape(wanted)}"]`);
+    if (el && el.querySelector('[data-read]')) { readRun(el, wanted); el.scrollIntoView(); }
+    // Keep the page current while GitHub is being asked or a review is running.
+    if (d.checking || !d.checked || d.runs.some(r => r.status === 'running'))
+      prTimer = setTimeout(() => { if (location.hash.startsWith('#/prs') && !$('dialog[open]')) views.prs(new URLSearchParams()); }, 4000);
+  }
+  $('#pr-on').onchange = async e => {
+    await api('pr-settings', {enabled: e.target.checked});
+    if (e.target.checked) await api('pr-check', {});
+    views.prs(params);
+  };
+};
+
+// worktrees
+
+views.worktrees = async () => {
+  const d = await api('worktrees');
+  const all = d.repos.flatMap(r => r.worktrees);
+  const stale = all.filter(t => t.stale);
+  main.innerHTML = `
+    <h1>Worktrees</h1>
+    <p class="muted">Extra working folders for your checkouts, each on a branch of its own, so an agent can work on one thing without disturbing another. A worktree is stale when removing it loses nothing: no uncommitted or untracked files, every commit already on a remote, and nothing running in it.</p>
+    <h2>New worktree</h2>
+    <form class="row" id="wt-add">
+      <select name="checkout" required>${d.checkouts.map(c =>
+        `<option value="${esc(c.checkout)}">${esc(c.name)}</option>`).join('')}</select>
+      <input name="branch" placeholder="branch, new or existing" required>
+      <input name="base" placeholder="start a new branch from (default: current)">
+      <button class="primary">Create</button>
+    </form>
+    <p class="small muted">It goes in <code>&lt;checkout&gt;/.worktrees/&lt;branch&gt;</code>, which git is told to ignore.</p>
+    ${stale.length ? `<div class="banner ok row"><span class="grow">${stale.length} stale worktree${stale.length > 1 ? 's' : ''} can go without losing anything.</span><button class="primary" id="wt-clean">Clean up…</button></div>` : ''}
+    ${d.repos.map(r => `<h2>${esc(r.name)} <span class="muted small">${esc(r.checkout)} · ${esc(r.branch || 'detached')}</span></h2>
+      <div class="list">${r.worktrees.map(t => `<div class="item">
+        <div class="row"><div class="grow"><strong>${esc(t.branch || 'detached ' + t.head.slice(0, 8))}</strong>
+          ${t.stale ? badge('stale', 'ok') : badge('keep')}${t.missing ? badge('folder gone', 'bad') : ''}</div>
+          ${t.missing ? '' : `<button data-term="${esc(t.path)}">Terminal</button>`}
+          <button data-copy-path="${esc(t.path)}">Copy path</button>
+          ${t.stale ? `<button class="danger" data-remove-wt="${esc(t.path)}">Remove</button>` : ''}</div>
+        <div class="meta"><code>${esc(t.path)}</code></div>
+        <div class="small">${esc(t.reason)}${t.upstream && !t.stale ? ` · tracks ${esc(t.upstream)}` : ''}</div></div>`).join('')}</div>`).join('') ||
+      '<p class="empty">No worktrees besides the checkouts themselves.</p>'}`;
+  $('#wt-add').onsubmit = async e => {
+    e.preventDefault();
+    const f = e.target;
+    try {
+      const done = await api('worktree-add', {checkout: f.checkout.value, branch: f.branch.value, base: f.base.value});
+      toast('Created ' + done.path);
+      views.worktrees();
+    } catch (err) { toast(err.message); }
+  };
+  const remove = async (paths, deleteBranches) => {
+    const done = await api('worktree-clean', {paths, delete_branches: deleteBranches});
+    const failed = done.results.filter(r => !r.ok);
+    toast(failed.length ? failed[0].message : `Removed ${done.results.length}`);
+    views.worktrees();
+  };
+  if ($('#wt-clean')) $('#wt-clean').onclick = () => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'dialog';
+    dlg.innerHTML = `<form><h2>Remove ${stale.length} stale worktree${stale.length > 1 ? 's' : ''}?</h2>
+      <ul class="small">${stale.map(t => `<li><code>${esc(t.path)}</code><br><span class="muted">${esc(t.reason)}</span></li>`).join('')}</ul>
+      <label class="toggle"><input type="checkbox" name="branches"> Also delete their local branches (git keeps any that are not merged)</label>
+      <p class="small muted">Each one is checked again just before it goes; git refuses to remove one that changed.</p>
+      <div class="row" style="justify-content:flex-end"><button type="button" data-cancel>Cancel</button><button class="primary danger-bg">Remove</button></div></form>`;
+    document.body.append(dlg);
+    $('[data-cancel]', dlg).onclick = () => dlg.close();
+    $('form', dlg).onsubmit = async e => {
+      e.preventDefault();
+      dlg.close();
+      await remove(stale.map(t => t.path), e.target.branches.checked);
+    };
+    dlg.addEventListener('close', () => dlg.remove());
+    dlg.showModal();
+  };
+  main.querySelectorAll('[data-remove-wt]').forEach(b => {
+    b.onclick = () => { if (confirm(`Remove ${b.dataset.removeWt}?`)) remove([b.dataset.removeWt], false); };
+  });
+  main.querySelectorAll('[data-copy-path]').forEach(b => { b.onclick = () => copy(b.dataset.copyPath); });
+  main.querySelectorAll('[data-term]').forEach(b => {
+    b.onclick = () => api('worktree-terminal', {path: b.dataset.term}).then(() => toast('Opening a terminal…'), err => toast(err.message));
+  });
+};
 
 async function route() {
   hideTip();

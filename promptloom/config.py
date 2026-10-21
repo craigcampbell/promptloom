@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tomllib
 from pathlib import Path
@@ -11,6 +12,7 @@ STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", "~/.local/state")).expanduser(
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 PLUGIN_DIR = CONFIG_DIR / "harnesses"
 PROVIDER_FILE = CONFIG_DIR / "provider.toml"  # written by `promptloom provider`
+SETTINGS_FILE = CONFIG_DIR / "settings.toml"  # switches flipped in the app; override config.toml
 
 DEFAULT_TOML = """\
 # promptloom configuration. Every value shown is the default.
@@ -24,9 +26,48 @@ ignore_contexts = []        # working directories whose sessions are never captu
 
 [ui]
 # The built-in app: search, tags, notes, the graph and project timelines.
-# `promptloom ui` opens it. It listens on this machine only.
+# `promptloom ui` opens it in the browser, `promptloom app` in a window of its
+# own. It listens on this machine only.
 enabled = true
 port = 8765
+window = "auto"             # "auto", "webview" (pywebview), "chrome" (app mode) or "browser"
+
+# How to open a terminal window: the command, then the program to run in it.
+# [] finds one (ptyxis, gnome-terminal, kgx, konsole, kitty, …; Terminal.app;
+# Windows Terminal or cmd).
+terminal = []
+
+[tools]
+# Tools "New prompt" can start. Built in: claude, codex, copilot, hermes, pi,
+# openclaw, vscode, cursor; only the installed ones are offered. {prompt} is
+# the prompt, {prompt_file} a file holding it, {dir} the project; "model" is
+# added after the program when you pick one. Add your own or change the flags:
+# [tools.agents.aider]
+# label = "Aider"
+# harness = "aider"
+# cmd = ["aider", "--message", "{prompt}"]
+# model = ["--model", "{model}"]
+# models = ["gpt-6.1-sol"]
+
+[prs]
+# Pull requests: yours and others' in your repositories, per project; reviews
+# and fixes by a coding agent; a notification when someone comments on yours.
+# Needs the GitHub CLI (gh), signed in. The switch in the app and
+# `promptloom pr on|off` turn it on and off.
+enabled = false
+notify = true               # notify when someone comments on one of your pull requests
+poll_minutes = 5
+agent = "claude"            # default for reviews and fixes: "claude", "codex" or "copilot"
+worktrees = true            # fixes work in <checkout>/.worktrees/<branch>, not the checkout
+roots = []                  # folders holding your checkouts; [] = the parents of your projects
+repos = []                  # more "owner/name" repositories to show others' pull requests from
+review_timeout_minutes = 20
+terminal = []               # how to open a terminal, e.g. ["gnome-terminal", "--"]; [] = find one
+# Agent commands: {prompt} is replaced by the prompt (otherwise it goes to stdin)
+# and {output} by a file the answer is read from (otherwise stdout is read).
+# [prs.agents.claude]
+# review = ["claude", "-p", "--model", "opus"]
+# fix = ["claude", "{prompt}"]
 
 [enrich]
 # `promptloom provider set <name>` switches summaries to a hosted provider with
@@ -100,6 +141,8 @@ def load(path: Path | None = None, provider_path: Path | None = None) -> dict:
     cfg = tomllib.loads(DEFAULT_TOML)
     if path.exists():
         cfg = _merge(cfg, tomllib.loads(path.read_text()))
+    if path == CONFIG_FILE and SETTINGS_FILE.exists():
+        cfg = _merge(cfg, tomllib.loads(SETTINGS_FILE.read_text()))
     cfg["keys"] = {}
     if provider_path and provider_path.exists():
         chosen = tomllib.loads(provider_path.read_text())
@@ -111,6 +154,20 @@ def load(path: Path | None = None, provider_path: Path | None = None) -> dict:
     cfg["vault"] = str(Path(cfg["vault"]).expanduser()) if cfg["vault"] else ""
     cfg["ignore_contexts"] = [str(Path(p).expanduser()) for p in cfg["ignore_contexts"]]
     return cfg
+
+
+def save_settings(section: str, values: dict, path: Path | None = None) -> dict:
+    """Change switches in settings.toml, keeping the rest. Returns the section."""
+    path = path or SETTINGS_FILE
+    data = tomllib.loads(path.read_text()) if path.exists() else {}
+    data.setdefault(section, {}).update(values)
+    lines = ["# Written by promptloom when you flip a switch in the app; overrides config.toml."]
+    for name, table in data.items():
+        lines.append(f"\n[{name}]")
+        lines += [f"{key} = {json.dumps(value)}" for key, value in table.items()]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n")
+    return data[section]
 
 
 def write_default() -> bool:

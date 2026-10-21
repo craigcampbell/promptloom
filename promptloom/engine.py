@@ -6,7 +6,7 @@ import json
 import time
 from pathlib import Path
 
-from . import config, connect, enrich, extract, harnesses
+from . import config, connect, enrich, extract, harnesses, prs
 from .model import Session
 from .store import Record, Store, write_atomic
 from .vault import Vault, obsidian_problem
@@ -276,6 +276,7 @@ class Loom:
             "map": note("Map.canvas"),
             "vault_problem": obsidian_problem(self.vault.root, self.vault.folder)
                              if obsidian else "",
+            "prs": prs.summary(self.store.dir, self.cfg),
             "errors": self.errors[-5:],
         }
 

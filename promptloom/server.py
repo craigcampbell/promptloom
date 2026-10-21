@@ -17,7 +17,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, analysis, config, connect, engine, extract, harnesses
+from . import (__version__, analysis, config, connect, desktop, engine, extract, gitlocal,
+               harnesses, launch, prs)
 from .store import Store
 from .userdata import UserData
 
@@ -38,6 +39,7 @@ class App:
         self.lock = threading.Lock()
         self._web = None
         self._web_stamp = None
+        self.checking: threading.Thread | None = None  # a GitHub check started from the page
         self._terms: dict = {}
 
     def refresh(self) -> None:
@@ -200,6 +202,7 @@ class Handler(BaseHTTPRequestHandler):
             "waiting": status.get("waiting", ""),
             "errors": status.get("errors", []),
             "obsidian": bool(status.get("vault")),
+            "drafts": sum(1 for d in app.user.drafts if not d.get("sent")),
         }
 
     def get_search(self, q):
@@ -249,11 +252,97 @@ class Handler(BaseHTTPRequestHandler):
     def get_connections(self, q):
         return analysis.connections(self.app.store, self.app.web())
 
+    def get_tools(self, q):
+        """What "New prompt" can start, the models each has used, and where."""
+        app = self.app
+        records = app.records()
+        contexts: dict[str, dict] = {}
+        for record in records:
+            context = record.session.context
+            if context.startswith("/") or (len(context) > 2 and context[1] == ":"):
+                entry = contexts.setdefault(context, {"context": context,
+                                                      "project": record.session.project,
+                                                      "last": ""})
+                entry["last"] = max(entry["last"], record.session.updated)
+        return {
+            "tools": launch.tools(app.cfg, records),
+            "contexts": sorted(contexts.values(), key=lambda c: c["last"], reverse=True),
+            "weavers": launch.weavers(app.cfg),
+            "stats": analysis.tools_overview(records, {n: i["label"] for n, i in app.info.items()}),
+        }
+
+    def get_drafts(self, q):
+        return sorted(self.app.user.drafts, key=lambda d: d["updated"], reverse=True)
+
+    def get_draft(self, q):
+        draft = self.app.user.draft(q.get("id", ""))
+        if draft is None:
+            raise LookupError("no such draft")
+        return draft
+
     def get_notes(self, q):
         return sorted(self.app.user.notes, key=lambda n: n["updated"], reverse=True)
 
     def get_status(self, q):
         return self.app.status()
+
+    # pull requests and worktrees
+
+    def get_prs(self, q):
+        cfg = self.app.cfg
+        state = prs.load(self.app.state_dir)
+        runs = [{k: v for k, v in run.items() if k != "output"} | {"has_output": bool(
+            run["kind"] == "review" and run["status"] == "done")} for run in state["runs"]]
+        return {
+            "settings": {k: prs.settings(cfg).get(k) for k in
+                         ("enabled", "notify", "agent", "worktrees", "poll_minutes")},
+            "agents": [{"name": name, "label": a["label"], "available": a["available"]}
+                       for name, a in prs.agents(cfg).items()],
+            "login": state.get("login", ""), "checked": state.get("checked", ""),
+            "checking": bool(self.app.checking and self.app.checking.is_alive()),
+            "error": state.get("error", ""), "prs": state["prs"], "runs": runs[::-1],
+        }
+
+    def get_pr_run(self, q):
+        run = next((r for r in prs.load(self.app.state_dir)["runs"] if r["id"] == q.get("id")),
+                   None)
+        if run is None:
+            raise LookupError("no such run")
+        text = ""
+        if run["kind"] == "review" and run["status"] == "done":
+            try:
+                text = Path(run["output"]).read_text()
+            except OSError:
+                text = ""
+        return {**run, "text": text}
+
+    def get_pr_prompt(self, q):
+        """The prompt a review or fix would start with, before the diff is added."""
+        state = prs.load(self.app.state_dir)
+        try:
+            pr = prs.find(state, q.get("url", ""))
+        except prs.PRError as exc:
+            raise LookupError(str(exc)) from exc
+        extra = q.get("extra", "")
+        if q.get("kind") == "fix":
+            worktree = q.get("worktree", "1") == "1" and bool(pr["checkout"])
+            review = prs.latest_review(self.app.state_dir, pr["url"])
+            return {"prompt": prs.fix_prompt(pr, review, worktree, extra)}
+        try:
+            _, where = prs.review_place(pr)
+        except gitlocal.GitError as exc:
+            raise ValueError(str(exc)) from exc
+        return {"prompt": prs.review_prompt(pr, "[the pull request's description]",
+                                            "[the diff, fetched when the review starts]",
+                                            where, extra)}
+
+    def get_worktrees(self, q):
+        paths = prs.local_checkouts(self.app.cfg, self.app.records())
+        listing = gitlocal.overview(paths)
+        return {"checkouts": sorted(({"name": i["name"], "checkout": i["checkout"],
+                                      "branch": i["branch"]} for i in listing),
+                                     key=lambda c: c["name"].lower()),
+                "repos": [i for i in listing if i["worktrees"]]}
 
     # writing
 
@@ -289,6 +378,144 @@ class Handler(BaseHTTPRequestHandler):
     def post_ingest(self, body):
         items = body if isinstance(body, list) else body.get("items", [body])
         return {"queued": self.app.ingest(items)}
+
+    def post_drafts(self, body):
+        with self.app.user.editing() as user:
+            if body.get("delete"):
+                if not user.delete_draft(str(body["delete"])):
+                    raise LookupError("no such draft")
+                return {"deleted": body["delete"]}
+            return user.put_draft(body)
+
+    def post_launch(self, body):
+        """Start a tool on a prompt, in a terminal; mark the draft as sent."""
+        name = str(body.get("tool") or "")
+        prompt = str(body.get("prompt") or "")
+        try:
+            done = launch.start(self.app.cfg, self.app.state_dir, name, prompt,
+                                str(body.get("model") or ""), str(body.get("context") or ""))
+        except (launch.LaunchError, desktop.DesktopError) as exc:
+            raise ValueError(str(exc)) from exc
+        if body.get("draft"):
+            with self.app.user.editing() as user:
+                user.mark_sent(str(body["draft"]), done["tool"])
+        return done
+
+    def post_weave(self, body):
+        """Ask a model for a stronger version of a draft; keep both."""
+        app = self.app
+        draft_id = str(body.get("draft") or "")
+        text = str(body.get("body") or "")
+        choice = str(body.get("weaver") or "")
+        if not choice:
+            found = launch.weavers(app.cfg)
+            if not found:
+                raise ValueError("no model to weave with: start Ollama, or store a provider "
+                                 "key with `promptloom provider set`")
+            choice = next((w["id"] for w in found if w["default"]), found[0]["id"])
+        tool_label = next((t["label"] for t in launch.tools(app.cfg)
+                           if t["name"] == body.get("tool")), "")
+        context = str(body.get("context") or "")
+        project = Path(context).name if context else ""
+        workdir = app.state_dir / "enrich-workdir"
+        workdir.mkdir(parents=True, exist_ok=True)
+        try:
+            woven = launch.weave(app.cfg, str(workdir), choice, text,
+                                 tool_label, project, launch.recent_context(app.records(), context))
+        except launch.LaunchError as exc:
+            raise ValueError(str(exc)) from exc
+        by = next((w["label"] for w in launch.weavers(app.cfg) if w["id"] == choice), choice)
+        with app.user.editing() as user:
+            if not draft_id or user.draft(draft_id) is None:
+                draft_id = user.put_draft({"body": text, "tool": body.get("tool", ""),
+                                           "model": body.get("model", ""),
+                                           "context": context})["id"]
+            draft = user.weave_draft(draft_id, woven["prompt"], by, woven["notes"])
+        return draft
+
+    def post_open_terminal(self, body):
+        path = str(body.get("context") or "")
+        if not Path(path).expanduser().is_dir():
+            raise ValueError("not a folder")
+        try:
+            launch.open_project(self.app.cfg, str(Path(path).expanduser()))
+        except desktop.DesktopError as exc:
+            raise ValueError(str(exc)) from exc
+        return {"opened": path}
+
+    def post_pr_settings(self, body):
+        allowed = {"enabled": bool, "notify": bool, "worktrees": bool, "agent": str}
+        values = {k: kind(body[k]) for k, kind in allowed.items() if k in body}
+        if "agent" in values and values["agent"] not in prs.agents(self.app.cfg):
+            raise ValueError(f"unknown agent {values['agent']!r}")
+        saved = config.save_settings("prs", values)
+        self.app.cfg.setdefault("prs", {}).update(values)
+        return saved
+
+    def post_pr_check(self, body):
+        """Ask GitHub in the background; the page polls /api/prs until it is done."""
+        app = self.app
+        if not (app.checking and app.checking.is_alive()):
+            records = app.records()
+            app.checking = threading.Thread(
+                target=prs.refresh, args=(app.cfg, app.state_dir, records), daemon=True)
+            app.checking.start()
+        return {"checking": True}
+
+    def post_pr_review(self, body):
+        try:
+            return prs.start_review(self.app.cfg, self.app.state_dir, str(body.get("url", "")),
+                                    str(body.get("agent") or ""), str(body.get("extra") or ""))
+        except prs.PRError as exc:
+            raise ValueError(str(exc)) from exc
+
+    def post_pr_fix(self, body):
+        try:
+            return prs.start_fix(self.app.cfg, self.app.state_dir, str(body.get("url", "")),
+                                 str(body.get("agent") or ""), str(body.get("extra") or ""),
+                                 bool(body.get("worktree", True)))
+        except prs.PRError as exc:
+            raise ValueError(str(exc)) from exc
+
+    def _checkout(self, path: str) -> Path:
+        """A checkout promptloom knows about; nothing else is touched."""
+        for checkout in prs.local_checkouts(self.app.cfg, self.app.records()):
+            if str(checkout) == path:
+                return checkout
+        raise LookupError("not a checkout promptloom knows")
+
+    def post_worktree_add(self, body):
+        branch = str(body.get("branch") or "").strip()
+        if not branch:
+            raise ValueError("name the branch")
+        try:
+            path = gitlocal.add(self._checkout(str(body.get("checkout", ""))), branch,
+                                str(body.get("base") or "").strip())
+        except gitlocal.GitError as exc:
+            raise ValueError(str(exc)) from exc
+        return {"path": str(path)}
+
+    def post_worktree_clean(self, body):
+        only = body.get("paths")
+        if not isinstance(only, list) or not only:
+            raise ValueError("say which worktrees to remove")
+        paths = prs.local_checkouts(self.app.cfg, self.app.records())
+        return {"results": gitlocal.clean(paths, [str(p) for p in only],
+                                          bool(body.get("delete_branches")))}
+
+    def post_worktree_terminal(self, body):
+        path = str(body.get("path", ""))
+        known = {i["checkout"] for i in gitlocal.overview(
+            prs.local_checkouts(self.app.cfg, self.app.records()))}
+        known |= {t["path"] for i in gitlocal.overview([Path(k) for k in known])
+                  for t in i["worktrees"]}
+        if path not in known:
+            raise LookupError("not a checkout or worktree promptloom knows")
+        try:
+            desktop.open_terminal(self.app.cfg, path)
+        except desktop.DesktopError as exc:
+            raise ValueError(str(exc)) from exc
+        return {"opened": path}
 
 
 def serve(cfg: dict, state_dir: Path | None = None, port: int | None = None,

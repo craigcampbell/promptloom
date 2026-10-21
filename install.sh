@@ -28,6 +28,9 @@ install_linux() {
     systemctl --user enable promptloom.service
     systemctl --user restart promptloom.service
 
+    echo "== app launcher"
+    "$HOME/.local/bin/promptloom" app --install
+
     echo "== top bar extension"
     local extensions="$HOME/.local/share/gnome-shell/extensions"
     if [[ -L "$extensions/$old_uuid" ]]; then

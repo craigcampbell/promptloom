@@ -59,6 +59,20 @@ function openUri(uri) {
     }
 }
 
+// The app in its own window (`promptloom app`), falling back to the browser.
+function openApp(uiUrl, page) {
+    const binary = promptloomBinary();
+    if (GLib.file_test(binary, GLib.FileTest.IS_EXECUTABLE)) {
+        try {
+            Gio.Subprocess.new([binary, 'app', ...(page ? [page] : [])], Gio.SubprocessFlags.NONE);
+            return;
+        } catch (_e) {
+            // fall through to the browser
+        }
+    }
+    openUri(page ? `${uiUrl}#/${page}` : uiUrl);
+}
+
 function promptloomBinary() {
     return GLib.find_program_in_path('promptloom') ??
         GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'promptloom']);
@@ -125,9 +139,11 @@ class Indicator extends PanelMenu.Button {
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         // The built-in app.
-        this._appItem = this.menu.addAction('Open Promptloom', () => openUri(this._status.ui));
-        this._searchItem = this.menu.addAction('Search prompts', () => openUri(`${this._status.ui}#/search`));
-        this._graphItem = this.menu.addAction('Connections graph', () => openUri(`${this._status.ui}#/graph`));
+        this._newItem = this.menu.addAction('New prompt…', () => openApp(this._status.ui, 'compose'));
+        this._appItem = this.menu.addAction('Open Promptloom', () => openApp(this._status.ui, ''));
+        this._searchItem = this.menu.addAction('Search prompts', () => openApp(this._status.ui, 'search'));
+        this._graphItem = this.menu.addAction('Connections graph', () => openApp(this._status.ui, 'graph'));
+        this._prsItem = this.menu.addAction('Pull requests', () => openApp(this._status.ui, 'prs'));
 
         // Obsidian, when a vault is configured.
         this._obsidian = new PopupMenu.PopupSubMenuMenuItem('Obsidian');
@@ -208,8 +224,12 @@ class Indicator extends PanelMenu.Button {
 
         this._actionsItem.label.text = `Action items (${status.open_actions ?? 0} open)`;
         this._copyItem.visible = Boolean(active);
-        for (const item of [this._appItem, this._searchItem, this._graphItem])
+        for (const item of [this._newItem, this._appItem, this._searchItem, this._graphItem])
             item.visible = Boolean(status.ui);
+        const prs = status.prs ?? {};
+        const attention = (prs.waiting ?? 0) + (prs.asked ?? 0);
+        this._prsItem.visible = Boolean(status.ui && prs.enabled);
+        this._prsItem.label.text = attention ? `Pull requests (${attention} need you)` : 'Pull requests';
         this._obsidian.visible = Boolean(status.vault);
 
         const notes = [];

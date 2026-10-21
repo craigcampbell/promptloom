@@ -8,6 +8,7 @@ case "$(uname -s)" in
         systemctl --user disable --now promptloom.service 2>/dev/null
         rm -f "$HOME/.config/systemd/user/promptloom.service"
         systemctl --user daemon-reload
+        "$HOME/.local/bin/promptloom" app --uninstall 2>/dev/null
         for uuid in promptloom@craigcampbell.github.io promptloom@craig.local; do
             gnome-extensions disable "$uuid" 2>/dev/null
             rm -f "$HOME/.local/share/gnome-shell/extensions/$uuid"

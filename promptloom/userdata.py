@@ -1,4 +1,5 @@
-"""What people add in the app: notes, and tags on sessions and single prompts.
+"""What people add in the app: notes, drafts of prompts, and tags on sessions
+and single prompts.
 
 Kept apart from state.json, which the daemon rewrites and holds locked while a
 summary runs, so an edit in the app is saved at once.
@@ -38,6 +39,9 @@ class UserData:
         self.notes: list[dict] = []  # id, title, body, tags, session, project, created, updated
         self.session_tags: dict[str, list[str]] = {}  # session key -> tags
         self.prompt_tags: dict[str, list[str]] = {}  # "<session key>#<prompt index>" -> tags
+        # id, title, body, tool, model, context, created, updated, sent, sent_with, and
+        # versions: every weave, with the text before and after
+        self.drafts: list[dict] = []
         self._loaded = None
 
     def load(self) -> None:
@@ -52,10 +56,11 @@ class UserData:
         self.notes = data.get("notes", [])
         self.session_tags = data.get("session_tags", {})
         self.prompt_tags = data.get("prompt_tags", {})
+        self.drafts = data.get("drafts", [])
 
     def save(self) -> None:
         data = {"version": 1, "notes": self.notes, "session_tags": self.session_tags,
-                "prompt_tags": self.prompt_tags}
+                "prompt_tags": self.prompt_tags, "drafts": self.drafts}
         write_atomic(self.path, json.dumps(data, ensure_ascii=False, indent=1))
         self._loaded = self.path.stat().st_mtime_ns
 
@@ -91,6 +96,53 @@ class UserData:
         before = len(self.notes)
         self.notes = [n for n in self.notes if n["id"] != note_id]
         return len(self.notes) != before
+
+    # drafts: prompts being worked on before they go to a tool
+
+    def draft(self, draft_id: str) -> dict | None:
+        return next((d for d in self.drafts if d["id"] == draft_id), None)
+
+    def put_draft(self, fields: dict) -> dict:
+        now = extract.now_ts()
+        draft = self.draft(str(fields.get("id") or ""))
+        if draft is None:
+            draft = {"id": "d-" + extract.item_id(f"{time.time()} {fields.get('body', '')}"),
+                     "created": now, "versions": [], "sent": "", "sent_with": ""}
+            self.drafts.append(draft)
+        body = str(fields.get("body") or "")
+        draft["body"] = body
+        draft["title"] = (str(fields.get("title") or "").strip()[:120]
+                          or extract.fallback_title(body, 80))
+        for key in ("tool", "model", "context"):
+            if key in fields:
+                draft[key] = str(fields.get(key) or "")
+        draft["updated"] = now
+        return draft
+
+    def weave_draft(self, draft_id: str, prompt: str, by: str, notes: str) -> dict:
+        """Make the woven prompt the draft's text, keeping what it said before."""
+        draft = self.draft(draft_id)
+        if draft is None:
+            raise LookupError("no such draft")
+        now = extract.now_ts()
+        draft["versions"].append({"at": now, "by": by, "notes": notes,
+                                  "before": draft.get("body", ""), "after": prompt})
+        draft["versions"] = draft["versions"][-20:]
+        draft["body"] = prompt
+        draft["updated"] = now
+        return draft
+
+    def mark_sent(self, draft_id: str, tool_label: str) -> dict | None:
+        draft = self.draft(draft_id)
+        if draft is not None:
+            draft["sent"] = extract.now_ts()
+            draft["sent_with"] = tool_label
+        return draft
+
+    def delete_draft(self, draft_id: str) -> bool:
+        before = len(self.drafts)
+        self.drafts = [d for d in self.drafts if d["id"] != draft_id]
+        return len(self.drafts) != before
 
     # tags
 
