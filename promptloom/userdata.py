@@ -32,6 +32,7 @@ def clean_tags(tags) -> list[str]:
     return out
 
 
+COLORS = ("red", "orange", "yellow", "green", "teal", "blue", "purple", "pink", "gray")
 DAY_SETS = {"daily": "0123456", "weekdays": "01234", "weekends": "56"}
 DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
@@ -66,6 +67,9 @@ class UserData:
         self.drafts: list[dict] = []
         self.briefs: dict[str, dict] = {}  # project -> {"text", "updated"}: what you wrote
         self.threads: dict[str, dict] = {}  # thread id -> {"name", "closed", "pinned"}
+        self.tag_colors: dict[str, str] = {}  # tag -> colour name
+        # id, name, color, items (prompt refs "<session key>#<index>"), created, updated
+        self.collections: list[dict] = []
         self._loaded = None
 
     def load(self) -> None:
@@ -83,11 +87,14 @@ class UserData:
         self.drafts = data.get("drafts", [])
         self.briefs = data.get("briefs", {})
         self.threads = data.get("threads", {})
+        self.tag_colors = data.get("tag_colors", {})
+        self.collections = data.get("collections", [])
 
     def save(self) -> None:
         data = {"version": 1, "notes": self.notes, "session_tags": self.session_tags,
                 "prompt_tags": self.prompt_tags, "drafts": self.drafts,
-                "briefs": self.briefs, "threads": self.threads}
+                "briefs": self.briefs, "threads": self.threads,
+                "tag_colors": self.tag_colors, "collections": self.collections}
         write_atomic(self.path, json.dumps(data, ensure_ascii=False, indent=1))
         self._loaded = self.path.stat().st_mtime_ns
 
@@ -116,6 +123,8 @@ class UserData:
         note["tags"] = clean_tags(fields.get("tags"))
         note["session"] = str(fields.get("session") or "")
         note["project"] = str(fields.get("project") or "")
+        if "prompt" in fields:  # a note on one prompt: "<session key>#<index>"
+            note["prompt"] = str(fields.get("prompt") or "")
         # A note can be a prompt: which tool runs it, and when, if on a schedule.
         for key in ("tool", "model", "context"):
             if key in fields:
@@ -211,6 +220,67 @@ class UserData:
         if not any(entry.values()):
             self.threads.pop(thread_id, None)
         return entry
+
+    # tag colours and collections
+
+    def set_tag_color(self, tag: str, color: str) -> dict[str, str]:
+        tag = clean_tag(tag)
+        if color in COLORS and tag:
+            self.tag_colors[tag] = color
+        else:
+            self.tag_colors.pop(tag, None)
+        return self.tag_colors
+
+    def collection(self, collection_id: str) -> dict | None:
+        return next((c for c in self.collections if c["id"] == collection_id), None)
+
+    def put_collection(self, fields: dict) -> dict:
+        now = extract.now_ts()
+        found = self.collection(str(fields.get("id") or ""))
+        name = str(fields.get("name") or "").strip()[:80]
+        if found is None:
+            found = next((c for c in self.collections
+                          if name and c["name"].lower() == name.lower()), None)
+        if found is None:
+            found = {"id": "c-" + extract.item_id(f"{time.time()} {name}"), "items": [],
+                     "created": now, "color": ""}
+            self.collections.append(found)
+        if name:
+            found["name"] = name
+        found.setdefault("name", "Untitled")
+        if fields.get("color") in COLORS or fields.get("color") == "":
+            found["color"] = fields.get("color", found.get("color", ""))
+        found["updated"] = now
+        return found
+
+    def collect(self, collection_id: str, refs: list[str], remove: bool = False) -> dict:
+        found = self.collection(collection_id)
+        if found is None:
+            raise LookupError("no such collection")
+        refs = [str(r) for r in refs if isinstance(r, str) and "#" in r]
+        if remove:
+            found["items"] = [r for r in found["items"] if r not in refs]
+        else:
+            found["items"] += [r for r in refs if r not in found["items"]]
+        found["updated"] = extract.now_ts()
+        return found
+
+    def delete_collection(self, collection_id: str) -> bool:
+        before = len(self.collections)
+        self.collections = [c for c in self.collections if c["id"] != collection_id]
+        return len(self.collections) != before
+
+    def add_tags(self, ref: str, tags: list[str], remove: bool = False) -> list[str]:
+        """Add (or take away) tags on one prompt, keeping the others."""
+        current = self.prompt_tags.get(ref, [])
+        wanted = clean_tags(tags)
+        tags = [t for t in current if t not in wanted] if remove else \
+            current + [t for t in wanted if t not in current]
+        if tags:
+            self.prompt_tags[ref] = tags
+        else:
+            self.prompt_tags.pop(ref, None)
+        return tags
 
     # tags
 

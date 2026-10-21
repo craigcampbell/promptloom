@@ -61,6 +61,58 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "recent_prompts",
+        "description": "The user's most recent prompts across every tool, newest first, each "
+                       "with its ref (use the ref with tag_prompt, add_to_collection and note_on). "
+                       "Optional filters as in search: project:shop harness:codex tag:idea.",
+        "inputSchema": {"type": "object", "properties": {
+            "query": {"type": "string"}, "limit": {"type": "integer"}}},
+    },
+    {
+        "name": "tag_prompt",
+        "description": "Add tags to one prompt (by ref) so the user can find and group it; "
+                       "lowercase, hyphens for spaces. remove=true takes them away.",
+        "inputSchema": {"type": "object", "properties": {
+            "ref": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}},
+            "remove": {"type": "boolean"}}, "required": ["ref", "tags"]},
+    },
+    {
+        "name": "list_tags",
+        "description": "Tags the user has put on prompts and notes, with counts.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_collections",
+        "description": "The user's collections: named sets of prompts.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "add_to_collection",
+        "description": "Put prompts (by ref) into a collection, creating it by name if needed.",
+        "inputSchema": {"type": "object", "properties": {
+            "name": {"type": "string"}, "refs": {"type": "array", "items": {"type": "string"}}},
+            "required": ["name", "refs"]},
+    },
+    {
+        "name": "note_on",
+        "description": "Attach a note to a prompt (by ref) or a project.",
+        "inputSchema": {"type": "object", "properties": {
+            "title": {"type": "string"}, "body": {"type": "string"},
+            "ref": {"type": "string"}, "project": {"type": "string"}}, "required": ["body"]},
+    },
+    {
+        "name": "list_threads",
+        "description": "The user's lines of work: sessions grouped across tools and models.",
+        "inputSchema": {"type": "object", "properties": {"project": {"type": "string"}}},
+    },
+    {
+        "name": "create_draft",
+        "description": "Save a prompt as a draft in promptloom for the user to review and send.",
+        "inputSchema": {"type": "object", "properties": {
+            "body": {"type": "string"}, "tool": {"type": "string"}, "context": {"type": "string"}},
+            "required": ["body"]},
+    },
+    {
         "name": "capture_note",
         "description": "Save a note or to-do to the user's promptloom inbox.",
         "inputSchema": {"type": "object", "properties": {
@@ -146,6 +198,69 @@ class Tools:
             lines.append(f"- {p['name']} ({p['sessions']} sessions, last {p['last'][:10]}): "
                          + ", ".join(p["models"]))
         return "\n".join(lines)
+
+    def recent_prompts(self, query: str = "", limit: int = 30):
+        data = analysis.stream(self._load(), self.user, query, "", max(1, min(limit, 200)))
+        lines = [f"{data['total']} prompts" + (f" (showing {len(data['items'])})"
+                                               if data["total"] > len(data["items"]) else "")]
+        for i in data["items"]:
+            text = " ".join(i["text"].split())[:240]
+            tags = ",".join(i["user_tags"]) or "-"
+            lines.append(f"- {i['ref']} | {i['ts'][:16]} | {i['project']} | {i['harness']} | "
+                         f"tags: {tags} | {text}")
+        return "\n".join(lines)
+
+    def tag_prompt(self, ref: str, tags: list, remove: bool = False):
+        self._load()
+        with self.user.editing() as user:
+            now = user.add_tags(ref, tags, remove)
+        return f"{ref} now tagged: {', '.join(now) or 'nothing'}"
+
+    def list_tags(self):
+        rows = analysis.user_tags(self._load(), self.user)
+        return "\n".join(f"- {r['tag']} ({r['count']})" for r in rows) or "No tags yet."
+
+    def list_collections(self):
+        self._load()
+        return "\n".join(f"- {c['name']} ({len(c['items'])} prompts; id {c['id']})"
+                          for c in self.user.collections) or "No collections yet."
+
+    def add_to_collection(self, name: str, refs: list):
+        self._load()
+        with self.user.editing() as user:
+            found = user.put_collection({"name": name})
+            user.collect(found["id"], refs)
+        return f"{len(refs)} added to {found['name']} ({len(found['items'])} prompts)"
+
+    def note_on(self, body: str, title: str = "", ref: str = "", project: str = ""):
+        records = self._load()
+        session = ref.split("#")[0] if ref else ""
+        if session and not project:
+            project = next((r.session.project for r in records if r.session.key == session), "")
+        with self.user.editing() as user:
+            note = user.put_note({"title": title or body.splitlines()[0][:60], "body": body,
+                                  "session": session, "project": project, "prompt": ref})
+        return f"Note saved: {note['title']} (id {note['id']})"
+
+    def list_threads(self, project: str = ""):
+        records = self._load()
+        found = brief.threads(records, connect.Web(records), self.user.drafts, [],
+                              {"threads": self.user.threads})
+        lines = []
+        for t in found:
+            if project and t.project != project:
+                continue
+            tools = ", ".join(sorted({r.session.harness for r in t.sessions}))
+            lines.append(f"- {t.name} [{t.project}; {len(t.sessions)} sessions; {tools}; "
+                         f"last {t.updated[:10]}]")
+            lines += [f"    {r.session.key}: {r.title}" for r in t.sessions[:4]]
+        return "\n".join(lines) or "No threads yet."
+
+    def create_draft(self, body: str, tool: str = "", context: str = ""):
+        self._load()
+        with self.user.editing() as user:
+            draft = user.put_draft({"body": body, "tool": tool, "context": context})
+        return f"Draft saved: {draft['title']} (id {draft['id']}); the user can send it from promptloom"
 
     def capture_note(self, text: str, todo: bool = False, context: str = ""):
         item = engine.capture(self.store, text, todo, context)

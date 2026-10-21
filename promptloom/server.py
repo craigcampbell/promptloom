@@ -196,6 +196,7 @@ class Handler(BaseHTTPRequestHandler):
             "harnesses": {h: app.label(h) for h in sorted({r.session.harness for r in records})},
             "labels": {name: i["label"] for name, i in app.info.items()},
             "tags": dict(sorted(tags.items(), key=lambda t: -t[1])[:200]),
+            "tag_colors": app.user.tag_colors,
             "recent": [analysis.session_summary(r, app.user) for r in records[:15]],
             "captures": app.store.captures[-50:][::-1],
             "active": status.get("active"),
@@ -293,6 +294,52 @@ class Handler(BaseHTTPRequestHandler):
         text = self._brief(record.session.project)["prompt"]
         return {"prompt": brief.handoff_prompt(record, text, tool),
                 "context": record.session.context, "project": record.session.project}
+
+    def get_stream(self, q):
+        app = self.app
+        data = analysis.stream(app.records(), app.user, q.get("q", ""), q.get("before", ""),
+                               int(q.get("limit", 60)))
+        data["tags"] = analysis.user_tags(app.records(), app.user)
+        data["collections"] = [{k: c[k] for k in ("id", "name", "color")} | {"count": len(c["items"])}
+                               for c in app.user.collections]
+        data["threads"] = self._thread_of_sessions()
+        return data
+
+    def _thread_of_sessions(self) -> dict:
+        """session key -> thread id and name, so the stream can join a thread's prompts."""
+        app = self.app
+        out = {}
+        for thread in brief.threads(app.records(), app.web(), settings={"threads": app.user.threads}):
+            for record in thread.sessions:
+                out[record.session.key] = {"id": thread.id, "name": thread.name}
+        return out
+
+    def get_tags(self, q):
+        return {"tags": analysis.user_tags(self.app.records(), self.app.user),
+                "colors": list(self.app.user.tag_colors.items())}
+
+    def get_collections(self, q):
+        app = self.app
+        by_ref = {}
+        for record in app.records():
+            for index, prompt in enumerate(record.session.prompts):
+                by_ref[f"{record.session.key}#{index}"] = (record, index, prompt)
+        out = []
+        for c in app.user.collections:
+            items = []
+            for ref in c["items"]:
+                hit = by_ref.get(ref)
+                if hit:
+                    record, index, prompt = hit
+                    items.append({"ref": ref, "key": record.session.key, "index": index,
+                                  "ts": prompt.ts, "title": record.title,
+                                  "text": extract.redact(prompt.text)[:600],
+                                  "project": record.session.project,
+                                  "harness": record.session.harness, "model": prompt.model,
+                                  "tags": analysis.prompt_tags(record, index, app.user),
+                                  "user_tags": app.user.prompt_tags.get(ref, [])})
+            out.append({**c, "items": items})
+        return out
 
     def get_tidbits(self, q):
         """Instant, model-free notes on a draft: what the history says about its words."""
@@ -458,6 +505,75 @@ class Handler(BaseHTTPRequestHandler):
             fields["name"] = str(fields["name"]).strip()[:120]
         with self.app.user.editing() as user:
             return user.set_thread(thread_id, **fields)
+
+    def post_prompt_tags(self, body):
+        """Add or take away tags on one prompt by ref."""
+        ref = str(body.get("ref") or "")
+        if "#" not in ref:
+            raise ValueError("which prompt? give its ref")
+        with self.app.user.editing() as user:
+            return {"tags": user.add_tags(ref, body.get("tags") or [], bool(body.get("remove")))}
+
+    def post_tag_color(self, body):
+        with self.app.user.editing() as user:
+            return {"colors": user.set_tag_color(str(body.get("tag") or ""),
+                                                 str(body.get("color") or ""))}
+
+    def post_collections(self, body):
+        with self.app.user.editing() as user:
+            if body.get("delete"):
+                if not user.delete_collection(str(body["delete"])):
+                    raise LookupError("no such collection")
+                return {"deleted": body["delete"]}
+            return user.put_collection(body)
+
+    def post_collect(self, body):
+        refs = body.get("refs") or ([body["ref"]] if body.get("ref") else [])
+        with self.app.user.editing() as user:
+            collection_id = str(body.get("id") or "")
+            if not collection_id and body.get("name"):
+                collection_id = user.put_collection({"name": body["name"]})["id"]
+            return user.collect(collection_id, refs, bool(body.get("remove")))
+
+    def post_organize(self, body):
+        """Ask a model to propose tags and collections for the prompts in view."""
+        app = self.app
+        choice = str(body.get("weaver") or "")
+        if not choice:
+            raise ValueError("pick a model")
+        data = analysis.stream(app.records(), app.user, str(body.get("query") or ""), "",
+                               int(body.get("limit") or 150))
+        rows = [" | ".join([i["ref"], i["ts"][:10], i["project"], i["harness"],
+                            ",".join(i["user_tags"]) or "-", " ".join(i["text"].split())[:220]])
+                for i in data["items"]]
+        workdir = app.state_dir / "enrich-workdir"
+        workdir.mkdir(parents=True, exist_ok=True)
+        try:
+            return launch.organize(app.cfg, str(workdir), choice,
+                                   str(body.get("instruction") or ""), rows)
+        except launch.LaunchError as exc:
+            raise ValueError(str(exc)) from exc
+
+    def post_apply(self, body):
+        """Apply approved organiser actions."""
+        done = 0
+        with self.app.user.editing() as user:
+            for action in body.get("actions") or []:
+                if not isinstance(action, dict):
+                    continue
+                op, ref, value = action.get("op"), str(action.get("ref", "")), str(action.get("value", ""))
+                if "#" not in ref or not value:
+                    continue
+                if op == "tag":
+                    user.add_tags(ref, [value])
+                elif op == "untag":
+                    user.add_tags(ref, [value], remove=True)
+                elif op == "collect":
+                    user.collect(user.put_collection({"name": value})["id"], [ref])
+                else:
+                    continue
+                done += 1
+        return {"applied": done}
 
     def post_note_run(self, body):
         """Run a note as a prompt now, the way its schedule would."""

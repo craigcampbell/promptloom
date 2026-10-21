@@ -4,6 +4,18 @@
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const main = $('#main');
+const MAC = /Mac|iPhone|iPad/.test(navigator.platform);
+const MOD = MAC ? '⌘' : 'Ctrl';
+
+// Appearance: theme and accent, remembered per browser.
+function applyAppearance() {
+  const theme = localStorage.getItem('pl.theme') || 'system';
+  const accent = localStorage.getItem('pl.accent') || '';
+  if (theme === 'system') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+  if (accent) document.documentElement.dataset.accent = accent; else delete document.documentElement.dataset.accent;
+}
+applyAppearance();
 
 // helpers
 
@@ -102,13 +114,17 @@ function toolChip(harness) {
 }
 
 // Tags are "kind:value" for the ones worked out, bare for the ones people add.
+const TAG_COLORS = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'purple', 'pink', 'gray'];
+function tagColor(tag) { return overview?.tag_colors?.[tag] || ''; }
 function chip(tag, opts = {}) {
   const [k, ...rest] = tag.includes(':') ? tag.split(':') : ['', tag];
   const v = rest.join(':');
+  const color = !k ? tagColor(v) : '';
+  const style = color ? ` data-color="${color}" style="--tc:var(--c-${color})"` : '';
   const sw = k === 'model' ? `<span class="swatch" style="background:${modelColor(v)}"></span>` :
     k === 'harness' ? `<span class="swatch" style="background:${toolColor(v)}"></span>` : '';
   const x = opts.remove ? ` <span class="x" data-remove="${esc(tag)}" title="Remove">×</span>` : '';
-  return `<span class="chip${k ? '' : ' user'}" data-tag="${esc(tag)}">${sw}` +
+  return `<span class="chip${k ? '' : ' user'}" data-tag="${esc(tag)}"${style}>${sw}` +
     (k ? `<span class="k">${esc(k)}</span>${esc(v)}` : `#${esc(v)}`) + x + '</span>';
 }
 
@@ -205,7 +221,19 @@ async function loadOverview() {
 
 const views = {};
 
-views.home = async () => {
+function homeSwitch(which) {
+  return `<div class="switch-seg" id="home-switch"><button class="${which === 'loom' ? 'on' : ''}" data-home="loom">Loom</button><button class="${which === 'stream' ? 'on' : ''}" data-home="stream">Stream</button></div>`;
+}
+function wireHomeSwitch() {
+  main.querySelectorAll('[data-home]').forEach(b => { b.onclick = () => { localStorage.setItem('pl.home', b.dataset.home); views.home(new URLSearchParams()); }; });
+}
+
+views.home = async params => {
+  if (localStorage.getItem('pl.home') === 'stream') return views.stream(params, true);
+  return views.loom(params);
+};
+
+views.loom = async () => {
   const o = overview;
   const active = o.active;
   const [threads, tools] = await Promise.all([api('threads'), api('tools').catch(() => ({tools: []}))]);
@@ -217,7 +245,7 @@ views.home = async () => {
         <input type="search" name="q" placeholder="Search prompts and notes…  try  model:opus  project:name  tag:idea" autofocus>
         <button class="primary">Search</button>
       </form>
-      <div class="row start">${active ? `<span class="pulse"></span> <span class="small">Now: <a href="${sessionHref(active.key)}">${esc(active.title)}</a> <span class="muted">· ${toolLabel(active.harness)} · ${esc(active.project)}</span></span>` : '<span class="small muted">No session active right now.</span>'}
+      <div class="row start">${homeSwitch('loom')} ${active ? `<span class="pulse"></span> <span class="small">Now: <a href="${sessionHref(active.key)}">${esc(active.title)}</a> <span class="muted">· ${toolLabel(active.harness)} · ${esc(active.project)}</span></span>` : '<span class="small muted">No session active right now.</span>'}
         <span class="grow"></span>
         <span class="muted small">start in</span>${have.map(x => `<a href="#/compose?tool=${encodeURIComponent(x.name)}"><button>${esc(x.label)}</button></a>`).join('')}</div>
     </div>
@@ -264,6 +292,7 @@ views.home = async () => {
     ideas.push(`<div class="item slim"><strong>${esc(i.title)}</strong><div class="small muted clip">${esc(i.prompt.slice(0, 180))}…</div>
       <div class="row small" style="margin-top:4px"><a href="#/compose?idea=${encodeURIComponent(i.prompt)}&context=${encodeURIComponent(i.where || '')}"><button>Open as a prompt</button></a></div></div>`);
   $('#ideas').innerHTML = ideas.join('') || '<p class="empty">Nothing to suggest yet.</p>';
+  wireHomeSwitch();
   $('#q').onsubmit = e => { e.preventDefault(); location.hash = searchHref(e.target.q.value); };
   $('#cap').onsubmit = async e => {
     e.preventDefault();
@@ -1184,6 +1213,294 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'Escape') $('dialog.palette')?.close();
 });
 document.getElementById('palette-open').onclick = openPalette;
+$('#palette-open kbd').textContent = `${MOD}K`;
+
+// Appearance popover
+$('#appearance').onclick = e => {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'popover appearance';
+  const theme = localStorage.getItem('pl.theme') || 'system', accent = localStorage.getItem('pl.accent') || '';
+  dlg.innerHTML = `<div class="small muted">Theme</div><div class="switch-seg row">${['system', 'light', 'dark'].map(t => `<button data-theme="${t}" class="${t === theme ? 'on' : ''}">${t}</button>`).join('')}</div>
+    <div class="small muted" style="margin-top:10px">Accent</div><div class="swatches row">${[['', '#2a78d6'], ['purple', '#7c3aed'], ['teal', '#0d9488'], ['green', '#16a34a'], ['orange', '#ea580c'], ['pink', '#db2777'], ['graphite', '#4b5563']].map(([a, c]) =>
+      `<button data-accent="${a}" class="${a === accent ? 'on' : ''}" style="background:${c}" title="${a || 'blue'}"></button>`).join('')}</div>`;
+  document.body.append(dlg);
+  const r = e.target.getBoundingClientRect();
+  dlg.style.top = (r.bottom + 6) + 'px'; dlg.style.left = Math.max(8, r.right - 220) + 'px';
+  dlg.querySelectorAll('[data-theme]').forEach(b => { b.onclick = () => { localStorage.setItem('pl.theme', b.dataset.theme); applyAppearance(); dlg.close(); }; });
+  dlg.querySelectorAll('[data-accent]').forEach(b => { b.onclick = () => { localStorage.setItem('pl.accent', b.dataset.accent); applyAppearance(); dlg.close(); }; });
+  dlg.onclick = ev => { if (ev.target === dlg) dlg.close(); };
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.showModal();
+};
+
+// Dropping a prompt on a text box inserts its text.
+document.addEventListener('dragover', e => {
+  const t = e.target;
+  if (t.matches('textarea') && e.dataTransfer.types.includes('application/x-promptloom-ref')) { e.preventDefault(); t.classList.add('drop-ok'); }
+});
+document.addEventListener('dragleave', e => { if (e.target.matches?.('textarea')) e.target.classList.remove('drop-ok'); });
+document.addEventListener('drop', e => {
+  const t = e.target;
+  if (!t.matches?.('textarea') || !e.dataTransfer.types.includes('application/x-promptloom-ref')) return;
+  e.preventDefault();
+  t.classList.remove('drop-ok');
+  const text = e.dataTransfer.getData('text/plain');
+  const quote = t.classList.contains('body') ? text.split('\n').map(l => '> ' + l).join('\n') : text;
+  const at = t.selectionStart ?? t.value.length;
+  t.value = t.value.slice(0, at) + (at && !t.value.slice(0, at).endsWith('\n') ? '\n\n' : '') + quote + '\n' + t.value.slice(at);
+  t.dispatchEvent(new Event('input'));
+});
+
+// the stream: every prompt, newest first, woven on a thread
+
+let streamMode = localStorage.getItem('pl.streamMode') || 'one';
+const projectSlots = {};
+function projectColor(name) {
+  if (!(name in projectSlots)) projectSlots[name] = Object.keys(projectSlots).length;
+  const i = projectSlots[name];
+  return i < 8 ? `var(--p${i + 1})` : 'var(--other)';
+}
+
+function knot(i, threads, collections) {
+  const thread = threads[i.key];
+  const byId = Object.fromEntries(collections.map(c => [c.id, c]));
+  return `<div class="item knot" draggable="true" data-ref="${esc(i.ref)}" data-key="${esc(i.key)}" data-project="${esc(i.project)}" data-harness="${esc(i.harness)}" data-thread="${esc(thread?.id || i.key)}">
+    <div class="row small"><span class="time">${new Date(i.ts).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</span>
+      <a href="${projectHref(i.project)}" style="color:${projectColor(i.project)};font-weight:600">${esc(i.project)}</a>
+      ${toolChip(i.harness)}${i.model ? chip('model:' + i.model) : ''}
+      <span class="muted">· <a href="${sessionHref(i.key)}#p${i.index}">${esc(i.title)}</a></span>
+      ${thread ? `<span class="muted">· <a href="#/threads?open=${encodeURIComponent(thread.id)}">${esc(thread.name)}</a></span>` : ''}</div>
+    <div class="text" data-expand>${esc(i.text)}</div>
+    <div class="foot">
+      ${i.user_tags.map(t => chip(t, {remove: true})).join('')}
+      <input class="addtag" placeholder="+ tag" data-addtag>
+      ${i.collections.map(c => byId[c] ? `<span class="badge" style="border-color:var(--c-${byId[c].color || 'gray'})">${esc(byId[c].name)}</span>` : '').join('')}
+      ${i.notes.map(n => `<a class="small" href="#/note/${encodeURIComponent(n.id)}">📝 ${esc(n.title)}</a>`).join('')}
+      <button class="link" data-note>+ note</button>
+      <button class="link" data-reuse>reuse</button>
+    </div>
+    <div class="noteform" hidden></div>
+  </div>`;
+}
+
+function drawThreads(container) {
+  const old = container.querySelector('svg.thread');
+  if (old) old.remove();
+  const knots = [...container.querySelectorAll('.knot')];
+  if (!knots.length) return;
+  const laneOf = k => streamMode === 'project' ? k.dataset.project : streamMode === 'tool' ? k.dataset.harness : 'all';
+  const lanes = [];
+  for (const k of knots) if (!lanes.includes(laneOf(k))) lanes.push(laneOf(k));
+  // Up to seven lanes; everything rarer shares the last one.
+  const laneX = l => 14 + Math.min(lanes.indexOf(l), 6) * 18;
+  container.style.setProperty('--gutter', (lanes.length > 1 ? 24 + Math.min(lanes.length, 7) * 18 : 44) + 'px');
+  const top = container.getBoundingClientRect().top;
+  const pts = knots.map(k => {
+    const r = k.getBoundingClientRect();
+    const colorOf = streamMode === 'tool' ? toolColor(k.dataset.harness) : projectColor(k.dataset.project);
+    return {x: laneX(laneOf(k)), y: r.top - top + Math.min(26, r.height / 2), color: colorOf, thread: k.dataset.thread};
+  });
+  const h = container.scrollHeight;
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'thread');
+  svg.setAttribute('width', parseInt(getComputedStyle(container).getPropertyValue('--gutter')));
+  svg.setAttribute('height', h);
+  let d = '';
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1];
+    const same = a.thread === b.thread;
+    const my = (a.y + b.y) / 2;
+    d += `<path d="M${a.x},${a.y} C${a.x},${my} ${b.x},${my} ${b.x},${b.y}" fill="none" stroke="${b.color}" stroke-width="${same ? 3 : 1.5}" stroke-opacity="${same ? 0.9 : 0.45}"${same ? '' : ' stroke-dasharray="3 4"'}/>`;
+  }
+  for (const p of pts) d += `<circle cx="${p.x}" cy="${p.y}" r="5" fill="${p.color}" stroke="var(--bg)" stroke-width="2"/>`;
+  svg.innerHTML = d;
+  container.prepend(svg);
+}
+
+views.stream = async (params, asHome = false) => {
+  const q = params.get('q') || '';
+  const first = await api('stream?q=' + encodeURIComponent(q));
+  const projects = [...new Set(first.items.map(i => i.project))];
+  main.innerHTML = `
+    <div class="row">${asHome ? homeSwitch('stream') : ''}<h1 class="grow">${asHome ? '' : 'Stream'}</h1>
+      <div class="switch-seg">${[['one', 'One thread'], ['project', 'By project'], ['tool', 'By tool']].map(([m, l]) => `<button data-mode="${m}" class="${m === streamMode ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <button id="organize">Organise with AI…</button></div>
+    <p class="muted small">Every prompt from every tool, newest first. Drag one onto a tag, a collection or any text box. Type <code>+ tag</code> under a prompt to tag it; click a tag's colour dot to colour it.</p>
+    <div class="stream-top">
+      <form class="search" id="sq"><input type="search" name="q" value="${esc(q)}" placeholder="Filter: words, project:x harness:y tag:z model:m"><button>Filter</button></form>
+    </div>
+    <div class="tagbar" id="tagbar"></div>
+    <div class="stream${first.collections.length ? '' : ' no-rail'}">
+      <div class="weave" id="weave"></div>
+      <aside class="rail" id="rail"></aside>
+    </div>
+    <div class="row" style="margin-top:14px"><button id="more" hidden>Load more</button><span class="muted small" id="count"></span></div>`;
+  wireHomeSwitch();
+  $('#sq').onsubmit = e => { e.preventDefault(); location.hash = `#/${asHome ? '' : 'stream'}?q=${encodeURIComponent(e.target.q.value.trim())}`; if (asHome) views.stream(new URLSearchParams({q: e.target.q.value.trim()}), true); };
+  main.querySelectorAll('[data-mode]').forEach(b => { b.onclick = () => { streamMode = b.dataset.mode; localStorage.setItem('pl.streamMode', streamMode); main.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('on', x === b)); drawThreads($('#weave')); }; });
+
+  let data = first, items = [];
+  const weave = $('#weave');
+  const renderTagbar = () => {
+    $('#tagbar').innerHTML = (data.tags.length ? data.tags.map(t => `<span class="chip user" data-tag="${esc(t.tag)}" data-droptag="${esc(t.tag)}"${t.color ? ` data-color="${t.color}" style="--tc:var(--c-${t.color})"` : ''}>#${esc(t.tag)} <span class="muted">${t.count}</span> <span class="dot" data-colorpick="${esc(t.tag)}" title="Colour">●</span></span>`).join('') : '<span class="muted small">No tags of your own yet. Add one under any prompt.</span>');
+    $('#tagbar').querySelectorAll('[data-colorpick]').forEach(d => { d.onclick = e => { e.stopPropagation(); colorPopover(e, d.dataset.colorpick); }; });
+    $('#tagbar').querySelectorAll('[data-droptag]').forEach(el => {
+      el.ondragover = e => { if (e.dataTransfer.types.includes('application/x-promptloom-ref')) { e.preventDefault(); el.classList.add('drop-ok'); } };
+      el.ondragleave = () => el.classList.remove('drop-ok');
+      el.ondrop = async e => { e.preventDefault(); el.classList.remove('drop-ok'); await api('prompt-tags', {ref: e.dataTransfer.getData('application/x-promptloom-ref'), tags: [el.dataset.droptag]}); toast(`Tagged #${el.dataset.droptag}`); reload(); };
+    });
+  };
+  const renderRail = () => {
+    $('#rail').innerHTML = `<h2>Collections <a class="small muted" href="#/collections">all</a></h2>
+      ${data.collections.map(c => `<div class="collection" data-collection="${esc(c.id)}" style="--tc:var(--c-${c.color || 'gray'})"><a href="#/collections?open=${encodeURIComponent(c.id)}">${esc(c.name)}</a><span class="n">${c.count}</span></div>`).join('')}
+      <form class="row" id="newcol"><input placeholder="New collection" style="flex:1;min-width:0"><button>+</button></form>
+      <p class="small muted">Drag prompts here to collect them.</p>`;
+    $('#newcol').onsubmit = async e => { e.preventDefault(); const name = e.target.querySelector('input').value.trim(); if (!name) return; await api('collections', {name}); reload(); };
+    $('#rail').querySelectorAll('[data-collection]').forEach(el => {
+      el.ondragover = e => { if (e.dataTransfer.types.includes('application/x-promptloom-ref')) { e.preventDefault(); el.classList.add('drop-ok'); } };
+      el.ondragleave = () => el.classList.remove('drop-ok');
+      el.ondrop = async e => { e.preventDefault(); el.classList.remove('drop-ok'); await api('collect', {id: el.dataset.collection, ref: e.dataTransfer.getData('application/x-promptloom-ref')}); toast('Collected'); reload(); };
+    });
+  };
+  const renderItems = () => {
+    let day = '';
+    weave.innerHTML = items.map(i => {
+      const d = new Date(i.ts).toLocaleDateString([], {weekday: 'short', month: 'short', day: 'numeric'});
+      const head = d !== day ? `<div class="day"><span>${d}</span></div>` : '';
+      day = d;
+      return head + knot(i, data.threads, data.collections);
+    }).join('') || '<p class="empty">No prompts match.</p>';
+    $('#count').textContent = `${items.length} of ${data.total}`;
+    $('#more').hidden = !data.next;
+    wireKnots();
+    requestAnimationFrame(() => drawThreads(weave));
+  };
+  const reload = async () => {
+    const before = items.length;
+    data = await api('stream?q=' + encodeURIComponent(q) + '&limit=' + Math.max(60, before));
+    items = data.items;
+    renderTagbar(); renderRail(); renderItems();
+    loadOverview().catch(() => {});
+  };
+  const wireKnots = () => {
+    weave.querySelectorAll('.knot').forEach(el => {
+      const ref = el.dataset.ref;
+      const item = items.find(i => i.ref === ref);
+      el.ondragstart = e => { e.dataTransfer.setData('application/x-promptloom-ref', ref); e.dataTransfer.setData('text/plain', item.text); e.dataTransfer.effectAllowed = 'copyLink'; el.classList.add('dragging'); };
+      el.ondragend = () => el.classList.remove('dragging');
+      el.querySelector('[data-expand]').onclick = e => { e.currentTarget.classList.toggle('open'); drawThreads(weave); };
+      const input = el.querySelector('[data-addtag]');
+      input.onkeydown = async e => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const tags = input.value.split(/[,\s]+/).filter(Boolean);
+        if (!tags.length) return;
+        await api('prompt-tags', {ref, tags});
+        reload();
+      };
+      el.querySelectorAll('[data-remove]').forEach(x => { x.onclick = async e => { e.stopPropagation(); await api('prompt-tags', {ref, tags: [x.dataset.remove], remove: true}); reload(); }; });
+      el.querySelector('[data-note]').onclick = () => {
+        const box = el.querySelector('.noteform');
+        box.hidden = !box.hidden;
+        if (!box.hidden) {
+          box.innerHTML = `<textarea placeholder="A note on this prompt"></textarea><div class="row small"><button class="primary" data-savenote>Save note</button></div>`;
+          box.querySelector('[data-savenote]').onclick = async () => {
+            const body = box.querySelector('textarea').value.trim();
+            if (!body) return;
+            await api('notes', {title: body.split('\n')[0].slice(0, 60), body, project: item.project, session: item.key, prompt: ref});
+            toast('Note saved'); reload();
+          };
+          box.querySelector('textarea').focus();
+        }
+      };
+      el.querySelector('[data-reuse]').onclick = () => { location.hash = `#/compose?idea=${encodeURIComponent(item.text)}`; };
+    });
+  };
+  const colorPopover = (e, tag) => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'popover';
+    const current = tagColor(tag);
+    dlg.innerHTML = `<div class="small muted">#${esc(tag)}</div><div class="swatches row">${TAG_COLORS.map(c => `<button data-c="${c}" class="${c === current ? 'on' : ''}" style="background:var(--c-${c})"></button>`).join('')}<button data-c="" title="none" style="background:var(--surface-2)">×</button></div>`;
+    document.body.append(dlg);
+    dlg.style.top = (e.clientY + 8) + 'px'; dlg.style.left = Math.min(e.clientX, innerWidth - 300) + 'px';
+    dlg.querySelectorAll('[data-c]').forEach(b => { b.onclick = async () => { await api('tag-color', {tag, color: b.dataset.c}); dlg.close(); await loadOverview(); reload(); }; });
+    dlg.onclick = ev => { if (ev.target === dlg) dlg.close(); };
+    dlg.addEventListener('close', () => dlg.remove());
+    dlg.showModal();
+  };
+  $('#more').onclick = async () => {
+    const page = await api('stream?q=' + encodeURIComponent(q) + '&before=' + encodeURIComponent(data.next));
+    data.next = page.next; items = items.concat(page.items); renderItems();
+  };
+  $('#organize').onclick = () => organizeDialog(q, reload);
+  items = first.items;
+  renderTagbar(); renderRail(); renderItems();
+  window.onresize = () => { if (document.body.contains(weave)) drawThreads(weave); };
+};
+
+async function organizeDialog(query, reload) {
+  const t = await api('tools');
+  if (!t.weavers.length) { toast('No model available: start Ollama or store a provider key'); return; }
+  const dlg = document.createElement('dialog');
+  dlg.className = 'dialog';
+  dlg.innerHTML = `<form><h2>Organise with AI</h2>
+    <p class="muted small">Tell a model how to tidy the prompts in view (up to 150, with the current filter). It proposes tags and collections; nothing changes until you apply what you tick.</p>
+    <textarea name="instruction" rows="3" placeholder="e.g. tag everything about billing #billing; collect the GPU and ComfyUI prompts into “GPU work”; tag quick questions #question"></textarea>
+    <div class="row small" style="margin-top:8px"><label>Model <select name="weaver">${t.weavers.map(w => `<option value="${esc(w.id)}"${w.default ? ' selected' : ''}>${esc(w.label)}</option>`).join('')}</select></label>
+      <span class="grow"></span><button type="button" data-cancel>Cancel</button><button class="primary" data-go>Propose</button></div>
+    <div id="plan"></div></form>`;
+  document.body.append(dlg);
+  const form = $('form', dlg);
+  $('[data-cancel]', dlg).onclick = () => dlg.close();
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const btn = $('[data-go]', dlg); btn.disabled = true; btn.textContent = 'Thinking…';
+    try {
+      const plan = await api('organize', {instruction: form.instruction.value, weaver: form.weaver.value, query});
+      $('#plan', dlg).innerHTML = `<p class="small" style="margin-top:10px">${esc(plan.summary)}</p>
+        <div class="plan">${plan.actions.map((a, i) => `<label><input type="checkbox" name="a" value="${i}" checked> <strong>${a.op}</strong> ${esc(a.value)} <span class="muted">→ ${esc(a.ref.split(':').pop())}</span> <span class="why">${esc(a.why)}</span></label>`).join('') || '<p class="muted">Nothing proposed.</p>'}</div>
+        ${plan.actions.length ? '<div class="row" style="margin-top:8px;justify-content:flex-end"><button type="button" class="primary" data-apply>Apply ticked</button></div>' : ''}`;
+      const apply = $('[data-apply]', dlg);
+      if (apply) apply.onclick = async () => {
+        const chosen = [...dlg.querySelectorAll('input[name=a]:checked')].map(c => plan.actions[+c.value]);
+        const done = await api('apply', {actions: chosen});
+        toast(`Applied ${done.applied}`); dlg.close(); reload();
+      };
+    } catch (err) { toast(err.message); } finally { btn.disabled = false; btn.textContent = 'Propose again'; }
+  };
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.showModal();
+  form.instruction.focus();
+}
+
+views.collections = async params => {
+  const cols = await api('collections');
+  const openId = params.get('open');
+  main.innerHTML = `<div class="row"><h1 class="grow">Collections</h1><form class="row" id="newcol"><input placeholder="New collection"><button class="primary">Create</button></form></div>
+    <p class="muted">Named sets of prompts, gathered by hand (drag them in from the Stream) or by the organiser. Reuse one as a prompt, or hand the set to an assistant over MCP (<code>list_collections</code>).</p>
+    <div class="list">${cols.map(c => `<details class="item" data-col="${esc(c.id)}"${c.id === openId ? ' open' : ''} style="border-left:4px solid var(--c-${c.color || 'gray'})">
+      <summary><div class="row"><strong class="grow">${esc(c.name)}</strong><span class="muted small">${c.items.length} prompts</span></div></summary>
+      <div class="row small" style="margin:8px 0"><button data-rename>Rename</button><div class="swatches">${TAG_COLORS.map(x => `<button data-color="${x}" class="${x === c.color ? 'on' : ''}" style="background:var(--c-${x})"></button>`).join('')}</div><span class="grow"></span><button class="danger" data-del>Delete</button></div>
+      <div class="list">${c.items.map(i => `<div class="item slim knot" draggable="true" data-ref="${esc(i.ref)}"><div class="row small"><a href="${sessionHref(i.key)}#p${i.index}">${esc(i.title)}</a> <span class="muted">${esc(i.project)} · ${ago(i.ts)}</span><span class="grow"></span><button class="link" data-reuse>reuse</button><button class="link" data-out="${esc(i.ref)}">remove</button></div><div class="text small clip">${esc(i.text)}</div>${chips(i.user_tags)}</div>`).join('') || '<p class="muted small">Empty. Drag prompts here from the Stream.</p>'}</div>
+    </details>`).join('') || '<p class="empty">No collections yet.</p>'}</div>`;
+  $('#newcol').onsubmit = async e => { e.preventDefault(); const name = e.target.querySelector('input').value.trim(); if (name) { await api('collections', {name}); views.collections(params); } };
+  main.querySelectorAll('[data-col]').forEach(el => {
+    const id = el.dataset.col;
+    const col = cols.find(c => c.id === id);
+    el.querySelector('[data-rename]').onclick = () => { const name = prompt('Name', col.name); if (name) api('collections', {id, name}).then(() => views.collections(params)); };
+    el.querySelectorAll('[data-color]').forEach(b => { b.onclick = () => api('collections', {id, color: b.dataset.color}).then(() => views.collections(params)); });
+    el.querySelector('[data-del]').onclick = () => { if (confirm(`Delete “${col.name}”? The prompts stay in your history.`)) api('collections', {delete: id}).then(() => views.collections(params)); };
+    el.querySelectorAll('[data-out]').forEach(b => { b.onclick = () => api('collect', {id, ref: b.dataset.out, remove: true}).then(() => views.collections(params)); });
+    el.querySelectorAll('.knot').forEach(k => {
+      const item = col.items.find(i => i.ref === k.dataset.ref);
+      k.ondragstart = e => { e.dataTransfer.setData('application/x-promptloom-ref', item.ref); e.dataTransfer.setData('text/plain', item.text); };
+      k.querySelector('[data-reuse]').onclick = () => { location.hash = `#/compose?idea=${encodeURIComponent(item.text)}`; };
+    });
+    el.ondragover = e => { if (e.dataTransfer.types.includes('application/x-promptloom-ref')) { e.preventDefault(); el.classList.add('drop-ok'); } };
+    el.ondragleave = () => el.classList.remove('drop-ok');
+    el.ondrop = async e => { e.preventDefault(); el.classList.remove('drop-ok'); await api('collect', {id, ref: e.dataTransfer.getData('application/x-promptloom-ref')}); views.collections(params); };
+  });
+};
 
 // tools (harnesses)
 

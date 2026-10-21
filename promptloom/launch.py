@@ -416,6 +416,64 @@ def hints(cfg: dict, workdir: str, choice: str, draft: str, tool_label: str = ""
     return out
 
 
+ORGANIZE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "actions": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"op": {"type": "string", "enum": ["tag", "untag", "collect"]},
+                           "ref": {"type": "string"}, "value": {"type": "string"},
+                           "why": {"type": "string"}},
+            "required": ["op", "ref", "value"]}},
+    },
+    "required": ["summary", "actions"],
+}
+
+ORGANIZE_INSTRUCTIONS = """\
+You are tidying one person's history of prompts to AI coding assistants. Below is an index: \
+each line is "ref | date | project | tool | tags | the prompt (cut short)". Follow the \
+instruction, proposing changes only; a person approves each one.
+
+Reply with a JSON object: "summary", one sentence on what you propose, and "actions", a \
+list of {{"op", "ref", "value", "why"}} where op is "tag" (add the tag in value, lowercase, \
+hyphens for spaces, no #), "untag" (take it away) or "collect" (put the prompt in the \
+collection named in value, creating it if needed), ref is a ref from the index exactly as \
+written, and why is a few words. Only propose what the instruction asks for. At most 60 \
+actions; prefer the clearest cases.
+
+Instruction: {instruction}
+"""
+
+
+def organize(cfg: dict, workdir: str, choice: str, instruction: str, rows: list[str]) -> dict:
+    """Ask a model to propose tags and collections. Returns {"summary", "actions"}."""
+    if not instruction.strip():
+        raise LaunchError("say what to organise")
+    if not rows:
+        raise LaunchError("nothing in view to organise")
+    prompt = ORGANIZE_INSTRUCTIONS.format(instruction=instruction.strip()) + "\n" + "\n".join(rows)
+    try:
+        backend = weaver(cfg, choice, workdir)
+        waiting = backend.ready()
+        if waiting:
+            raise LaunchError(waiting)
+        data = backend.complete(prompt, ORGANIZE_SCHEMA)
+    except enrich.EnrichError as exc:
+        raise LaunchError(str(exc)) from exc
+    actions = []
+    known = {row.split(" | ", 1)[0] for row in rows}
+    for item in data.get("actions", []) if isinstance(data, dict) else []:
+        if not isinstance(item, dict) or item.get("op") not in ("tag", "untag", "collect"):
+            continue
+        ref, value = str(item.get("ref", "")).strip(), str(item.get("value", "")).strip()
+        if ref in known and value:
+            actions.append({"op": item["op"], "ref": ref, "value": value,
+                            "why": str(item.get("why", ""))[:120]})
+    summary = data.get("summary") if isinstance(data, dict) else ""
+    return {"summary": summary if isinstance(summary, str) else "", "actions": actions[:60]}
+
+
 def recent_context(records, directory: str, limit: int = 6) -> list[str]:
     """Titles and summaries of recent sessions in the folder, for the weaver."""
     lines = []

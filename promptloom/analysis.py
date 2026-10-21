@@ -164,6 +164,73 @@ def search(records: list[Record], user: UserData, query: str, limit: int = 200) 
             "hits": hits, "notes": notes}
 
 
+def stream(records: list[Record], user: UserData, query: str = "", before: str = "",
+           limit: int = 60) -> dict:
+    """Every prompt, newest first, in pages: the Stream. `before` is the last
+    timestamp of the previous page; the filters are the search ones."""
+    terms, filters = parse_query(query)
+
+    def wanted(key: str, value: str) -> bool:
+        return all(v in value.lower() for v in filters.get(key, []))
+
+    rows = []
+    for record in records:
+        session = record.session
+        if not (wanted("harness", session.harness) and wanted("project", session.project)):
+            continue
+        for index, prompt in enumerate(session.prompts):
+            if before and prompt.ts >= before:
+                continue
+            if not wanted("model", prompt.model or UNKNOWN_MODEL):
+                continue
+            tags = prompt_tags(record, index, user)
+            if filters.get("tag") and not all(_tag_matches(t, tags) for t in filters["tag"]):
+                continue
+            if terms and not all(t in prompt.text.lower() for t in terms):
+                continue
+            rows.append((prompt.ts, record, index, tags))
+    rows.sort(key=lambda r: r[0], reverse=True)
+    page = rows[:limit]
+    notes_by_prompt: dict[str, list[dict]] = {}
+    for note in user.notes:
+        if note.get("prompt"):
+            notes_by_prompt.setdefault(note["prompt"], []).append(
+                {"id": note["id"], "title": note["title"]})
+    collected: dict[str, list[str]] = {}
+    for collection in user.collections:
+        for ref in collection["items"]:
+            collected.setdefault(ref, []).append(collection["id"])
+    items = []
+    for ts, record, index, tags in page:
+        session = record.session
+        ref = f"{session.key}#{index}"
+        prompt = session.prompts[index]
+        items.append({"ref": ref, "key": session.key, "index": index, "ts": ts,
+                      "title": record.title, "text": extract.redact(prompt.text),
+                      "model": prompt.model, "harness": session.harness,
+                      "project": session.project, "tags": tags,
+                      "user_tags": user.prompt_tags.get(ref, []),
+                      "notes": notes_by_prompt.get(ref, []),
+                      "collections": collected.get(ref, [])})
+    return {"items": items, "total": len(rows), "terms": terms,
+            "next": page[-1][0] if len(rows) > limit else ""}
+
+
+def user_tags(records: list[Record], user: UserData) -> list[dict]:
+    """The tags people added, with how many prompts and notes carry each."""
+    counts: Counter = Counter()
+    for tags in user.prompt_tags.values():
+        counts.update(tags)
+    for key, tags in user.session_tags.items():
+        n = next((len(r.session.prompts) for r in records if r.session.key == key), 0)
+        for tag in tags:
+            counts[tag] += n
+    for note in user.notes:
+        counts.update(note.get("tags", []))
+    return [{"tag": t, "count": n, "color": user.tag_colors.get(t, "")}
+            for t, n in counts.most_common()]
+
+
 # sessions and projects
 
 

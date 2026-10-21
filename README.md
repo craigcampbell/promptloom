@@ -67,7 +67,21 @@ sessions, tools and models:
 - **Projects** shows each project's activity day by day, coloured by model, and
   every point where the work moved from one model to another.
 - **Loom** (home) shows your threads, what needs you (drafts waiting, pull
-  request feedback, open action items) and what promptloom suggests.
+  request feedback, open action items) and what promptloom suggests. The
+  switch at the top turns the home page into the **Stream** instead.
+- **Stream**: every prompt from every tool, newest first, woven on a thread:
+  one thread for everything, or a lane per project or per tool, with the
+  thread crossing over when the work moves. Tag any prompt in place (type
+  under it, or drag it onto a tag), give tags colours, add a note to a
+  prompt, drag a prompt into a collection or into any text box, or reuse it
+  as a new prompt.
+- **Collections**: named sets of prompts, gathered by hand or by the
+  organiser.
+- **Organise with AI**: tell a model how to tidy the prompts in view ("tag
+  everything about billing #billing; collect the GPU prompts into GPU work").
+  It proposes tags and collections; you tick what to apply.
+- **Appearance** (◐ in the top bar): light, dark or system, and an accent
+  colour. Shortcuts show ⌘ on a Mac and Ctrl elsewhere.
 - **Models** shows which models worked on which projects, the projects several
   models shared, and the most common hand-offs.
 - **Tools** does the same for the tools themselves, apart from the models
@@ -156,8 +170,11 @@ args = ["mcp"]
 ```
 
 Its tools are `project_brief` (read this first), `search_prompts`,
-`project_history`, `related_work`, `list_projects` and `capture_note`. It
-reads your history and can add to your inbox; it changes nothing else.
+`recent_prompts`, `project_history`, `related_work`, `list_projects`,
+`list_threads`, `list_tags`, `list_collections` to read, and `tag_prompt`,
+`add_to_collection`, `note_on`, `create_draft` and `capture_note` to write:
+enough for an assistant to organise your history, leave you a note, or queue
+a prompt for you to send. It never changes your prompts themselves.
 
 ## Install
 
