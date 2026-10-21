@@ -5,7 +5,7 @@
   "description": "Every prompt you have typed into your AI coding tools, and what connects them",
   "main": "main.js",
   "private": true,
-  "author": "Craig Campbell",
+  "author": { "name": "Craig Campbell", "email": "craig.campbell@gmail.com" },
   "license": "MIT",
   "homepage": "https://github.com/craigcampbell/promptloom",
   "scripts": {
