@@ -82,8 +82,13 @@ sessions, tools and models:
 
 The screenshots use made-up projects from `scripts/demo.py`.
 
-A menu bar icon (a GNOME Shell extension on Linux, a small native app on macOS)
-shows the session you are in, your recent sessions and a quick-capture box.
+A menu bar icon shows the session you are in, your recent sessions, and opens
+the app. On Linux it is a status notifier icon like Claude's or ChatGPT's
+(drawn by the AppIndicator extension GNOME ships with, so it appears at once;
+needs `python3-gi`), started by the daemon; `promptloom tray` starts it by
+hand. The GNOME Shell extension in `gnome-extension/` is the older way, with
+a quick-capture box, and only appears after logging out and in. On macOS it is
+a small native app.
 
 ## Supported tools
 

@@ -31,6 +31,7 @@ ignore_contexts = []        # working directories whose sessions are never captu
 enabled = true
 port = 8765
 window = "auto"             # "auto", "webview" (pywebview), "chrome" (app mode) or "browser"
+tray = true                 # Linux: an icon in the top bar (needs python3-gi; no log-out needed)
 
 # How to open a terminal window: the command, then the program to run in it.
 # [] finds one (ptyxis, gnome-terminal, kgx, konsole, kitty, …; Terminal.app;

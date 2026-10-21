@@ -90,6 +90,8 @@ def cmd_watch(args) -> int:
               f"app: port {loom.cfg['ui'].get('port', 8765)} is taken; not serving", flush=True)
     for error in loom.errors:
         print(f"warning: {error}", flush=True)
+    if loom.cfg.get("ui", {}).get("tray", True) and tray_command():
+        desktop.spawn(tray_command())  # it leaves on its own if one is already up
     while True:
         try:
             if _config_stamp() != stamp:
@@ -344,6 +346,31 @@ def cmd_ui(args) -> int:
     except KeyboardInterrupt:
         pass
     return 0
+
+
+def tray_command() -> list[str] | None:
+    """How to start the top bar icon: the tray script under the system Python
+    (the one with PyGObject), or None where there is nothing to show it."""
+    if not sys.platform.startswith("linux"):
+        return None
+    for python in ("/usr/bin/python3", "/usr/local/bin/python3"):
+        if Path(python).exists():
+            script = Path(__file__).parent / "tray.py"
+            binary = desktop.which("promptloom") or f"{sys.executable} -m promptloom"
+            return [python, str(script), str(config.STATE_DIR / "status.json"), binary]
+    return None
+
+
+def cmd_tray(args) -> int:
+    """Show the top bar icon (Linux); the daemon does this itself."""
+    argv = tray_command()
+    if argv is None:
+        print("The tray icon is for Linux desktops with a status notifier host.", file=sys.stderr)
+        return 1
+    if args.background:
+        desktop.spawn(argv)
+        return 0
+    return subprocess.call(argv)
 
 
 def cmd_app(args) -> int:
@@ -642,6 +669,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int)
     p.add_argument("--no-open", action="store_true", help="serve without opening a browser")
     p.set_defaults(fn=cmd_ui)
+
+    p = sub.add_parser("tray", help="show the top bar icon (Linux; the daemon does this)")
+    p.add_argument("--background", action="store_true", help="start it and return")
+    p.set_defaults(fn=cmd_tray)
 
     p = sub.add_parser("app", help="open the app in a window of its own (dock icon)")
     p.add_argument("at", nargs="?", help="page to open: compose, search, prs, …")
