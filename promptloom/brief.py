@@ -334,6 +334,52 @@ def threads(records: list[Record], web: connect.Web, drafts: list[dict] | None =
     return out
 
 
+def tidbits(draft: str, project: str, records: list[Record], web: connect.Web,
+            hidden: list[str] | None = None, limit: int = 6) -> list[dict]:
+    """What your history says about what you are typing, with no model: rules you
+    stated, things that broke, open items and past sessions sharing its words."""
+    words = {w for w in connect.terms(draft) if " " not in w}
+    if not words:
+        return []
+    group = [r for r in records if r.session.project == project]
+    auto = draft_brief(project, records, hidden) if group else None
+    found: list[tuple[float, dict]] = []
+
+    def score(text: str) -> float:
+        hits = words & {w for w in connect.terms(text) if " " not in w}
+        return len(hits) / (len(words) ** 0.5) if hits else 0.0
+
+    if auto:
+        for c in auto["conventions"]:
+            if (n := score(c["text"])):
+                found.append((n + (0.5 if c["times"] > 1 else 0),
+                              {"kind": "rule", "text": c["text"], "session": c["session"]}))
+        for p in auto["pitfalls"]:
+            if (n := score(p["text"])):
+                found.append((n + 0.3, {"kind": "broke", "text": p["text"], "session": p["session"]}))
+        for o in auto["open"]:
+            if (n := score(o["text"])):
+                found.append((n + 0.2, {"kind": "open", "text": o["text"], "session": o["session"]}))
+    for record in records:
+        vector = web.vectors.get(record.session.key, {})
+        shared = words & set(vector)
+        if shared:
+            weight = sum(vector[w] for w in shared) * (1.3 if record.session.project == project else 1)
+            found.append((weight, {"kind": "session", "text": record.title,
+                                   "session": record.session.key, "project": record.session.project,
+                                   "words": sorted(shared)[:4], "summary": record.summary[:160]}))
+    found.sort(key=lambda item: -item[0])
+    out, seen = [], set()
+    for _, item in found:
+        key = (item["kind"], item["text"])
+        if key not in seen:
+            seen.add(key)
+            out.append(item)
+        if len(out) == limit:
+            break
+    return out
+
+
 def handoff_prompt(record: Record, brief_text: str, tool_label: str) -> str:
     """A prompt that picks up a session's work in another tool or model."""
     session = record.session

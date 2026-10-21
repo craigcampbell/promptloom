@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import (__version__, analysis, brief, config, connect, desktop, engine, extract,
-               gitlocal, harnesses, launch, prs)
+               gitlocal, harnesses, launch, prs, schedules)
 from .store import Store
 from .userdata import UserData
 
@@ -294,6 +294,16 @@ class Handler(BaseHTTPRequestHandler):
         return {"prompt": brief.handoff_prompt(record, text, tool),
                 "context": record.session.context, "project": record.session.project}
 
+    def get_tidbits(self, q):
+        """Instant, model-free notes on a draft: what the history says about its words."""
+        app = self.app
+        context = q.get("context", "")
+        project = next((r.session.project for r in app.records() if r.session.context == context),
+                       Path(context).name if context else "")
+        hidden = app.user.briefs.get(project, {}).get("hidden", [])
+        return {"project": project,
+                "items": brief.tidbits(q.get("q", ""), project, app.records(), app.web(), hidden)}
+
     def get_tools(self, q):
         """What "New prompt" can start, the models each has used, and where."""
         app = self.app
@@ -323,7 +333,8 @@ class Handler(BaseHTTPRequestHandler):
         return draft
 
     def get_notes(self, q):
-        return sorted(self.app.user.notes, key=lambda n: n["updated"], reverse=True)
+        notes = sorted(self.app.user.notes, key=lambda n: n["updated"], reverse=True)
+        return [{**n, "next_run": schedules.next_run(n)} for n in notes]
 
     def get_status(self, q):
         return self.app.status()
@@ -448,6 +459,18 @@ class Handler(BaseHTTPRequestHandler):
         with self.app.user.editing() as user:
             return user.set_thread(thread_id, **fields)
 
+    def post_note_run(self, body):
+        """Run a note as a prompt now, the way its schedule would."""
+        app = self.app
+        note = app.user.note(str(body.get("id") or ""))
+        if note is None:
+            raise LookupError("no such note")
+        try:
+            return schedules.run_note(app.cfg, app.state_dir, app.user, note, app.records(),
+                                      how="by hand")
+        except (launch.LaunchError, desktop.DesktopError) as exc:
+            raise ValueError(str(exc)) from exc
+
     def post_launch(self, body):
         """Start a tool on a prompt, in a terminal; mark the draft as sent."""
         name = str(body.get("tool") or "")
@@ -457,10 +480,37 @@ class Handler(BaseHTTPRequestHandler):
                                 str(body.get("model") or ""), str(body.get("context") or ""))
         except (launch.LaunchError, desktop.DesktopError) as exc:
             raise ValueError(str(exc)) from exc
-        if body.get("draft"):
+        if body.get("draft") or body.get("note"):
             with self.app.user.editing() as user:
-                user.mark_sent(str(body["draft"]), done["tool"])
+                if body.get("draft"):
+                    user.mark_sent(str(body["draft"]), done["tool"])
+                if body.get("note"):
+                    user.note_ran(str(body["note"]), "from the composer")
         return done
+
+    def post_hints(self, body):
+        """A cheap model's notes on a draft in progress."""
+        app = self.app
+        choice = str(body.get("weaver") or "")
+        if not choice:
+            raise ValueError("pick a model for hints")
+        context = str(body.get("context") or "")
+        project = next((r.session.project for r in app.records() if r.session.context == context),
+                       Path(context).name if context else "")
+        brief_text = ""
+        try:
+            brief_text = self._brief(project)["prompt"] if project else ""
+        except LookupError:
+            pass
+        tool_label = next((t["label"] for t in launch.tools(app.cfg)
+                           if t["name"] == body.get("tool")), "")
+        workdir = app.state_dir / "enrich-workdir"
+        workdir.mkdir(parents=True, exist_ok=True)
+        try:
+            return launch.hints(app.cfg, str(workdir), choice, str(body.get("body") or ""),
+                                tool_label, project, brief_text)
+        except launch.LaunchError as exc:
+            raise ValueError(str(exc)) from exc
 
     def post_weave(self, body):
         """Ask a model for a stronger version of a draft; keep both."""

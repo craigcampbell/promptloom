@@ -12,7 +12,7 @@ import traceback
 from pathlib import Path
 from urllib.parse import quote
 
-from . import __version__, brief, config, desktop, extract, gitlocal, launch, prs
+from . import __version__, brief, config, desktop, extract, gitlocal, launch, prs, schedules
 from .engine import Loom
 from .store import Store
 from .vault import obsidian_problem
@@ -109,6 +109,8 @@ def cmd_watch(args) -> int:
             traceback.print_exc()
         try:
             prs.tick(loom.cfg, loom.store.dir, loom.store.by_recency())
+            for title in schedules.tick(loom.cfg, loom.store.dir, loom.store.by_recency()):
+                print(f"ran scheduled note: {title}", flush=True)
         except Exception:  # GitHub being away must not stop the capture
             traceback.print_exc()
         time.sleep(loom.cfg.get("poll_seconds", 5))

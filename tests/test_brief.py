@@ -150,3 +150,20 @@ def test_http_api_for_briefs_threads_and_handoff(api):
     assert hand["context"] == "/w/shop" and "We ship on Fridays." in hand["prompt"]
     with pytest.raises(urllib.error.HTTPError):
         call(api + "/api/brief?project=nope")
+
+
+def test_tidbits_match_what_is_being_typed():
+    recs = [record("a", "/w/shop", "Never commit the .env file.", title="Env hygiene"),
+            record("b", "/w/shop", "never commit the .env file", day=2),
+            record("c", "/w/shop", "the websocket gateway broke after the redis upgrade", day=3,
+                   title="Gateway outage"),
+            record("d", "/w/game", "lobby websocket gateway for players", day=4, title="Lobby")]
+    recs[2].actions = [{"id": "a-1", "text": "Add gateway metrics", "done": False}]
+    web = connect.Web(recs)
+    items = brief.tidbits("add retries to the websocket gateway", "shop", recs, web)
+    kinds = {(i["kind"], i["text"]) for i in items}
+    assert ("broke", "the websocket gateway broke after the redis upgrade") in kinds
+    assert ("open", "Add gateway metrics") in kinds
+    assert ("session", "Gateway outage") in kinds and ("session", "Lobby") in kinds
+    assert not any("env" in i["text"] for i in items)  # nothing typed about that
+    assert brief.tidbits("", "shop", recs, web) == []

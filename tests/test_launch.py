@@ -5,6 +5,7 @@ import os
 import stat
 import threading
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -168,9 +169,11 @@ def test_weavers_come_from_ollama_and_stored_keys(monkeypatch):
     cfg = {"enrich": {"backend": "api", "url": "http://x", "model": "o5", "provider": "openai"},
            "keys": {"openai": "k", "anthropic": "k2", "groq": ""}}
     found = launch.weavers(cfg)
-    assert [w["id"] for w in found] == ["ollama:qwen3", "api:openai:o5",
-                                        "api:anthropic:claude-opus-5-5"]
-    assert [w["default"] for w in found] == [False, True, False]
+    assert [w["id"] for w in found] == ["ollama:qwen3", "api:openai:o5", "api:openai:gpt-5.5-mini",
+                                        "api:anthropic:claude-opus-5-5",
+                                        "api:anthropic:claude-haiku-5-5"]
+    assert [w["default"] for w in found] == [False, True, False, False, False]
+    assert found[2]["label"].endswith("(cheap)")
 
 
 def test_tools_overview():
@@ -223,3 +226,44 @@ def test_desktop_entry_names_the_app_window():
     text = desktop.desktop_entry(8765)
     assert "StartupWMClass=chrome-127.0.0.1__-Default" in text
     assert "Exec=" in text and "app --at compose" in text
+
+
+def test_web_and_desktop_tools_take_the_prompt_in_a_url(monkeypatch):
+    monkeypatch.setattr(launch, "which", lambda p: "/bin/" + p if p == "chatgpt" else "")
+    monkeypatch.setattr(launch.Path, "exists", lambda self: False)
+    tools = {t["name"]: t for t in launch.tools({})}
+    assert tools["chatgpt"]["kind"] == "web" and tools["chatgpt"]["available"]
+    assert tools["chatgpt-desktop"]["kind"] == "app" and tools["chatgpt-desktop"]["available"]
+    assert not tools["claude-desktop"]["available"] and tools["claude-web"]["available"]
+    assert tools["chatgpt"]["takes_model"] and not tools["claude-web"]["takes_model"]
+    assert tools["codex-web"]["clipboard"]
+
+    url, clip = launch.url_for(launch.TOOLS["chatgpt"], "fix the bug & test", "gpt-5.5")
+    assert url == "https://chatgpt.com/?q=fix+the+bug+%26+test&model=gpt-5.5" and not clip
+    assert launch.url_for(launch.TOOLS["claude-web"], "hi", "")[0] == "https://claude.ai/new?q=hi"
+    assert launch.url_for(launch.TOOLS["codex-web"], "hi", "") == ("https://chatgpt.com/codex", True)
+    long_url, clip = launch.url_for(launch.TOOLS["claude-web"], "x" * 3000, "")
+    assert long_url == "https://claude.ai/new" and clip
+
+    opened, copied = [], []
+    monkeypatch.setattr(launch, "open_uri", lambda u: opened.append(u))
+    monkeypatch.setattr(launch, "copy_to_clipboard", lambda t: copied.append(t) or True)
+    done = launch.start({}, Path("/tmp"), "claude-web", "hello", "", "/tmp")
+    assert done["how"] == "url" and opened == ["https://claude.ai/new?q=hello"] and not copied
+    done = launch.start({}, Path("/tmp"), "codex-web", "hello", "", "/tmp")
+    assert done["via_clipboard"] and copied == ["hello"]
+
+
+def test_hints_from_a_cheap_model_are_short_lists(tmp_path, monkeypatch):
+    class Backend:
+        def ready(self):
+            return ""
+
+        def complete(self, prompt, schema):
+            assert "What they have typed so far" in prompt and "Known about" not in prompt
+            return {"decide": ["Which pages?", 3, "  Persist how? "], "add": [], "watch": "no"}
+
+    monkeypatch.setattr(launch, "weaver", lambda cfg, choice, workdir: Backend())
+    out = launch.hints({}, str(tmp_path), "fake", "add a dark mode toggle", "Claude Code", "shop")
+    assert out == {"decide": ["Which pages?", "Persist how?"], "add": [], "watch": []}
+    assert launch.hints({}, str(tmp_path), "fake", "hi") == {"decide": [], "add": [], "watch": []}

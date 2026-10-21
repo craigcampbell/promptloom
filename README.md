@@ -46,6 +46,12 @@ sessions, tools and models:
   like and the constraints spelled out. Both versions are kept.
 - **Drafts** keep every prompt you are still working on, saved as you type,
   so a thought is never lost before it reaches a tool.
+- **As you type**, the composer shows what your history says about the words
+  you are using: a rule you stated, something that broke, an open item, past
+  sessions. That needs no model. Switch on *model notes* and a cheap model
+  (Haiku, a mini/flash model, a local one) adds what the assistant would have
+  to guess at, what from the project is worth adding, and a warning if the
+  prompt contradicts a rule.
 
 - **Search** every prompt from every tool, newest first. Filters go in the
   query: `model:opus project:shop harness:codex tag:idea theme:auth
@@ -54,7 +60,10 @@ sessions, tools and models:
   and the git branch are added automatically. Add your own to a session or to
   a single prompt, and search by them.
 - **Notes** of your own, in Markdown, attached to a project or a session. They
-  show up in search and on the graph.
+  show up in search and on the graph. A note can also be a prompt you keep
+  coming back to: run it in a tool by hand, open it in the composer, or put it
+  on a schedule ("weekdays at 08:00, in this project, with Claude Code"; it
+  runs while promptloom is running). Each note counts how often it has run.
 - **Projects** shows each project's activity day by day, coloured by model, and
   every point where the work moved from one model to another.
 - **Loom** (home) shows your threads, what needs you (drafts waiting, pull
@@ -168,6 +177,9 @@ a new extension only appears after you log out and back in.
 into `~/Applications` (needs the Xcode Command Line Tools: `xcode-select
 --install`). See [macos/README.md](macos/README.md).
 
+Everything above runs on Linux, macOS and Windows. The exceptions are
+listed with each platform below.
+
 **Windows** (PowerShell): `powershell -ExecutionPolicy Bypass -File
 windows\install.ps1` installs the command, a scheduled task that runs the
 daemon at sign-in, and a Start menu shortcut for the app. There is no tray
@@ -243,6 +255,12 @@ you pick one:
 | pi | `pi --model M "prompt"` |
 | OpenClaw | `openclaw --model M agent --message "prompt"` |
 | VS Code, Cursor | `code DIR` / `cursor DIR`, with the prompt on the clipboard |
+| Claude (desktop app) | `claude://claude.ai/new?q=…`, when the app is installed |
+| Claude (claude.ai), ChatGPT (chatgpt.com or its app) | the page with the prompt filled in |
+| Codex (cloud) | chatgpt.com/codex, with the prompt on the clipboard |
+
+Prompts longer than a link can carry go on the clipboard instead, and the
+page says so.
 
 The model box offers the models that tool has been seen using in your history,
 then a few known ones; leave it blank for the tool's default. If a tool takes

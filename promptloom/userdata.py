@@ -32,6 +32,28 @@ def clean_tags(tags) -> list[str]:
     return out
 
 
+DAY_SETS = {"daily": "0123456", "weekdays": "01234", "weekends": "56"}
+DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def clean_schedule(raw) -> dict:
+    """{"time": "08:00", "days": "0123456"} (weekday numbers, Monday 0), or {} for none."""
+    if not isinstance(raw, dict):
+        return {}
+    time_text = str(raw.get("time") or "").strip()
+    if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", time_text):
+        return {}
+    hour, minute = time_text.split(":")
+    days = raw.get("days", "daily")
+    if isinstance(days, list):
+        days = "".join(str(DAY_NAMES.index(d)) if d in DAY_NAMES else str(d) for d in days)
+    days = DAY_SETS.get(str(days), str(days))
+    days = "".join(sorted({c for c in days if c in "0123456"}))
+    if not days:
+        return {}
+    return {"time": f"{int(hour):02d}:{minute}", "days": days}
+
+
 class UserData:
     def __init__(self, state_dir: Path):
         self.path = state_dir / "user.json"
@@ -94,7 +116,23 @@ class UserData:
         note["tags"] = clean_tags(fields.get("tags"))
         note["session"] = str(fields.get("session") or "")
         note["project"] = str(fields.get("project") or "")
+        # A note can be a prompt: which tool runs it, and when, if on a schedule.
+        for key in ("tool", "model", "context"):
+            if key in fields:
+                note[key] = str(fields.get(key) or "")
+        if "schedule" in fields:
+            note["schedule"] = clean_schedule(fields.get("schedule"))
+        note.setdefault("runs", 0)
+        note.setdefault("last_run", "")
         note["updated"] = now
+        return note
+
+    def note_ran(self, note_id: str, how: str = "", at: str = "") -> dict | None:
+        note = self.note(note_id)
+        if note is not None:
+            note["runs"] = note.get("runs", 0) + 1
+            note["last_run"] = at or extract.now_ts()
+            note["last_run_how"] = how
         return note
 
     def delete_note(self, note_id: str) -> bool:

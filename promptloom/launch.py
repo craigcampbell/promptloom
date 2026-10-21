@@ -18,10 +18,13 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
+from urllib.parse import urlencode
 
 from . import enrich, extract
-from .desktop import (DesktopError, copy_to_clipboard, open_terminal, search_path, spawn,
-                      terminal, which)
+from .desktop import (DesktopError, copy_to_clipboard, open_terminal, open_uri, search_path,
+                      spawn, terminal, which)
+
+URL_PROMPT_CHARS = 1800  # longer prompts go on the clipboard instead of in the URL
 
 # {prompt} is the prompt, {prompt_file} a file holding it, {dir} the project.
 # "model" is spliced in after the program when a model was chosen.
@@ -48,12 +51,36 @@ TOOLS = {
     "openclaw": {"label": "OpenClaw", "harness": "openclaw",
                  "cmd": ["openclaw", "agent", "--message", "{prompt}"],
                  "model": ["--model", "{model}"], "models": []},
+    # Desktop apps and web apps take the prompt in a URL. "needs" is a program
+    # that must be installed for the entry to be offered; without one, the web
+    # version is always there.
+    # "needs": any of these programs or app bundles present means the app is installed.
+    "claude-desktop": {"label": "Claude (desktop app)", "harness": "claude-desktop",
+                       "url": "claude://claude.ai/new", "params": {"q": "{prompt}"},
+                       "needs": ["claude-desktop", "/Applications/Claude.app",
+                                 "~/AppData/Local/AnthropicClaude/claude.exe"], "models": []},
+    "claude-web": {"label": "Claude (claude.ai)", "harness": "claude-web",
+                   "url": "https://claude.ai/new", "params": {"q": "{prompt}"}, "models": []},
+    "chatgpt-desktop": {"label": "ChatGPT (desktop app)", "harness": "chatgpt",
+                        "url": "https://chatgpt.com/", "params": {"q": "{prompt}", "model": "{model}"},
+                        "needs": ["chatgpt", "/Applications/ChatGPT.app"],
+                        "open_with": {"linux": ["chatgpt"], "darwin": ["open", "-a", "ChatGPT"]},
+                        "models": ["gpt-5.5", "o5"]},
+    "chatgpt": {"label": "ChatGPT (chatgpt.com)", "harness": "chatgpt",
+                "url": "https://chatgpt.com/", "params": {"q": "{prompt}", "model": "{model}"},
+                "models": ["gpt-5.5", "o5"]},
+    "codex-web": {"label": "Codex (cloud, chatgpt.com)", "harness": "codex",
+                  "url": "https://chatgpt.com/codex", "clipboard": True, "models": []},
     "vscode": {"label": "VS Code (Copilot)", "harness": "copilot", "gui": True,
                "cmd": ["code", "{dir}"], "models": []},
     "cursor": {"label": "Cursor", "harness": "cursor", "gui": True,
                "cmd": ["cursor", "{dir}"], "models": []},
 }
 MAX_MODELS = 12
+# A cheap model per provider, for hints while typing.
+CHEAP_MODELS = {"anthropic": "claude-haiku-5-5", "openai": "gpt-5.5-mini",
+                "deepseek": "deepseek-chat", "openrouter": "anthropic/claude-haiku-5-5",
+                "groq": "llama-4-scout", "gemini": "gemini-3-flash"}
 
 
 class LaunchError(Exception):
@@ -78,11 +105,41 @@ def tools(cfg: dict, records=()) -> list[dict]:
         program = spec.get("cmd", [""])[0]
         used = [m for m, _ in seen.get(spec["harness"], Counter()).most_common()]
         models = list(dict.fromkeys(used + list(spec.get("models", []))))[:MAX_MODELS]
+        if spec.get("url"):
+            available = not spec.get("needs") or bool(installed(spec["needs"]))
+            kind = "app" if spec.get("needs") else "web"
+        else:
+            available = bool(program and which(program))
+            kind = "gui" if spec.get("gui") else "terminal"
         out.append({"name": name, "label": spec["label"], "harness": spec["harness"],
-                    "gui": bool(spec.get("gui")), "available": bool(program and which(program)),
-                    "program": program, "models": models, "used": used[:1],
-                    "takes_model": bool(spec.get("model"))})
+                    "kind": kind, "gui": kind in ("gui", "app", "web"), "available": available,
+                    "program": installed(spec.get("needs")) or program, "models": models,
+                    "used": used[:1],
+                    "takes_model": bool(spec.get("model"))
+                    or "{model}" in spec.get("params", {}).values(),
+                    "clipboard": bool(spec.get("clipboard") or kind == "gui")})
     return out
+
+
+def installed(needs) -> str:
+    """The first of the programs or app bundles that is present, or ""."""
+    for item in [needs] if isinstance(needs, str) else list(needs or []):
+        path = Path(item).expanduser()
+        if ("/" in item or "\\" in item) and path.exists():
+            return str(path)
+        if "/" not in item and which(item):
+            return item
+    return ""
+
+
+def opener(spec: dict) -> list[str]:
+    """How to hand a URL to a desktop app on this platform, else [] for the default."""
+    open_with = spec.get("open_with")
+    if isinstance(open_with, dict):
+        key = "darwin" if sys.platform == "darwin" else "win32" if sys.platform == "win32" else "linux"
+        open_with = open_with.get(key, [])
+    argv = [open_with] if isinstance(open_with, str) else list(open_with or [])
+    return argv if argv and which(argv[0]) else []
 
 
 def tool(cfg: dict, name: str) -> dict:
@@ -90,10 +147,24 @@ def tool(cfg: dict, name: str) -> dict:
     if name not in TOOLS and name not in custom:
         raise LaunchError(f"unknown tool {name!r}")
     spec = {**TOOLS.get(name, {"label": name, "harness": name}), **custom.get(name, {})}
+    if spec.get("url"):
+        if spec.get("needs") and not installed(spec["needs"]):
+            raise LaunchError(f"{spec['label']} is not installed")
+        return spec
     program = spec.get("cmd", [""])[0]
     if not program or not which(program):
         raise LaunchError(f"{spec['label']} is not installed (no {program!r} on PATH)")
     return spec
+
+
+def url_for(spec: dict, prompt: str, model: str) -> tuple[str, bool]:
+    """The URL that opens a web or desktop app on the prompt, and whether the
+    prompt had to go on the clipboard instead (too long, or the app has no way)."""
+    via_clipboard = bool(spec.get("clipboard")) or len(prompt) > URL_PROMPT_CHARS
+    values = {"{prompt}": "" if via_clipboard else prompt, "{model}": model}
+    params = {k: values.get(v, v) for k, v in spec.get("params", {}).items()}
+    params = {k: v for k, v in params.items() if v}
+    return spec["url"] + ("?" + urlencode(params) if params else ""), via_clipboard
 
 
 def command(spec: dict, prompt: str, model: str, directory: str, prompt_file: str) -> list[str]:
@@ -146,6 +217,16 @@ def start(cfg: dict, state_dir: Path, name: str, prompt: str, model: str = "",
     stamp = f"{int(time.time())}-{extract.item_id(prompt)}"
     prompt_file = folder / f"{stamp}.prompt"
     prompt_file.write_text(prompt)
+    if spec.get("url"):
+        url, via_clipboard = url_for(spec, prompt, model)
+        copied = copy_to_clipboard(prompt) if via_clipboard else False
+        argv = opener(spec)
+        if argv:
+            spawn([*argv, url])
+        else:
+            open_uri(url)
+        return {"tool": spec["label"], "dir": directory, "how": "url", "copied": copied,
+                "via_clipboard": via_clipboard}
     if spec.get("gui"):
         copied = copy_to_clipboard(prompt)
         spawn(command(spec, prompt, model, directory, str(prompt_file)), cwd=directory)
@@ -215,6 +296,11 @@ def weavers(cfg: dict) -> list[dict]:
                     + (f" · {model}" if model else ""), "provider": provider, "model": model,
                     "default": enrich_cfg.get("backend") == "api"
                     and enrich_cfg.get("provider") == provider})
+        cheap = CHEAP_MODELS.get(provider)
+        if cheap and cheap != model:
+            out.append({"id": f"api:{provider}:{cheap}", "label": f"{providers.label(provider)}"
+                        f" · {cheap} (cheap)", "provider": provider, "model": cheap,
+                        "default": False})
     if enrich_cfg.get("backend") == "command":
         argv = list(enrich_cfg.get("command", []))
         out.append({"id": "command", "label": " ".join([Path(argv[0]).name, *argv[1:]])
@@ -273,6 +359,61 @@ def weave(cfg: dict, workdir: str, choice: str, draft: str, tool_label: str = ""
         raise LaunchError("the model returned no prompt")
     notes = data.get("notes") if isinstance(data.get("notes"), str) else ""
     return {"prompt": prompt.strip(), "notes": " ".join(notes.split())}
+
+
+HINT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "decide": {"type": "array", "items": {"type": "string"}},
+        "add": {"type": "array", "items": {"type": "string"}},
+        "watch": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["decide", "add", "watch"],
+}
+
+HINT_INSTRUCTIONS = """\
+Someone is typing a prompt for an AI coding assistant ({tool}) in the project {project}. It \
+is not finished. Read what they have so far, with what is known about the project, and reply \
+with a JSON object of short notes to show beside the text as they type, each under 15 words:
+
+- "decide": questions the assistant would have to guess at unless the prompt answers them \
+(at most 3).
+- "add": details from the project context worth putting in the prompt: a rule they stated, \
+something that broke before, an open item this touches (at most 3; only if truly relevant).
+- "watch": one warning if the prompt asks for something risky or contradicts a stated rule, \
+else an empty list.
+
+Empty lists are fine. Never restate the prompt. Do not write the prompt for them.
+"""
+
+
+def hint_prompt(draft: str, tool_label: str, project: str, brief_text: str) -> str:
+    text = HINT_INSTRUCTIONS.format(tool=tool_label or "a coding assistant",
+                                    project=project or "they are in")
+    if brief_text.strip():
+        text += "\nWhat is known about the project:\n" + brief_text.strip()[:3000] + "\n"
+    return text + "\nWhat they have typed so far:\n\n" + draft.strip()
+
+
+def hints(cfg: dict, workdir: str, choice: str, draft: str, tool_label: str = "",
+          project: str = "", brief_text: str = "") -> dict:
+    """A cheap model's notes on a draft in progress: {"decide", "add", "watch"}."""
+    if len(draft.strip()) < 12:
+        return {"decide": [], "add": [], "watch": []}
+    try:
+        backend = weaver(cfg, choice, workdir)
+        waiting = backend.ready()
+        if waiting:
+            raise LaunchError(waiting)
+        data = backend.complete(hint_prompt(draft, tool_label, project, brief_text), HINT_SCHEMA)
+    except enrich.EnrichError as exc:
+        raise LaunchError(str(exc)) from exc
+    out = {}
+    for key in ("decide", "add", "watch"):
+        items = data.get(key) if isinstance(data, dict) else None
+        out[key] = [" ".join(i.split()) for i in items if isinstance(i, str) and i.strip()][:3] \
+            if isinstance(items, list) else []
+    return out
 
 
 def recent_context(records, directory: str, limit: int = 6) -> list[str]:

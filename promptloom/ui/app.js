@@ -180,6 +180,12 @@ function markdown(src) {
   return out.join('\n');
 }
 
+// Clicking into a filled search box selects what is there, so typing replaces it.
+document.addEventListener('focusin', e => {
+  const el = e.target;
+  if (el.matches('input[type=search], .search input, input[list]') && el.value) el.select();
+});
+
 // state shared between views
 
 let overview = null;
@@ -208,7 +214,7 @@ views.home = async () => {
   main.innerHTML = `
     <div class="hero">
       <form class="search" id="q">
-        <input name="q" placeholder="Search prompts and notes…  try  model:opus  project:name  tag:idea" autofocus>
+        <input type="search" name="q" placeholder="Search prompts and notes…  try  model:opus  project:name  tag:idea" autofocus>
         <button class="primary">Search</button>
       </form>
       <div class="row start">${active ? `<span class="pulse"></span> <span class="small">Now: <a href="${sessionHref(active.key)}">${esc(active.title)}</a> <span class="muted">· ${toolLabel(active.harness)} · ${esc(active.project)}</span></span>` : '<span class="small muted">No session active right now.</span>'}
@@ -294,7 +300,7 @@ views.search = async params => {
   const q = params.get('q') || '';
   main.innerHTML = `
     <h1>Search</h1>
-    <form class="search" id="q"><input name="q" value="${esc(q)}" placeholder="Words to find, plus filters" autofocus><button class="primary">Search</button></form>
+    <form class="search" id="q"><input type="search" name="q" value="${esc(q)}" placeholder="Words to find, plus filters" autofocus><button class="primary">Search</button></form>
     <div class="filters row small muted" id="filters"></div>
     <div id="results"><p class="muted">Searching…</p></div>`;
   const form = $('#q');
@@ -315,9 +321,12 @@ views.search = async params => {
     el.onchange = () => {
       if (!el.value) return;
       const v = /\s/.test(el.value) ? `"${el.value}"` : el.value;
-      location.hash = searchHref(`${form.q.value.trim()} ${el.dataset.filter}:${v}`.trim());
+      // Replace a filter of the same kind rather than piling them up.
+      const kept = form.q.value.trim().split(/\s+/).filter(w => w && !w.startsWith(el.dataset.filter + ':'));
+      location.hash = searchHref([...kept, `${el.dataset.filter}:${v}`].join(' '));
     };
   }
+  if (q) $('#filters').insertAdjacentHTML('beforeend', ' <a href="#/search" class="small">clear</a>');
   if (!q) {
     $('#results').innerHTML = `<div class="card small">
       <p>Every word has to match. Filters narrow it down:</p>
@@ -946,14 +955,23 @@ views.notes = async () => {
     <p class="muted">Your own notes, kept with your prompts. Attach one to a project or session, tag it, and it shows up in search and on the graph.</p>
     <div class="list">${notes.map(n => `<div class="item">
       <a href="#/note/${encodeURIComponent(n.id)}"><h3>${esc(n.title)}</h3></a>
-      <div class="meta">${ago(n.updated)}${n.project ? ` · <a href="${projectHref(n.project)}">${esc(n.project)}</a>` : ''}</div>
+      <div class="meta">${ago(n.updated)}${n.project ? ` · <a href="${projectHref(n.project)}">${esc(n.project)}</a>` : ''}${n.runs ? ` · run ${n.runs}×` : ''}${n.schedule?.time ? ` · ${badge(describeSchedule(n.schedule))}` : ''}</div>
       <div class="text small">${esc(n.body.slice(0, 220))}${n.body.length > 220 ? '…' : ''}</div>
       ${chips(n.tags)}</div>`).join('') || '<p class="empty">No notes yet.</p>'}</div>`;
 };
 
+const DAY_CHOICES = [['daily', 'every day'], ['weekdays', 'weekdays'], ['weekends', 'weekends'], ['0', 'Mondays'], ['1', 'Tuesdays'], ['2', 'Wednesdays'], ['3', 'Thursdays'], ['4', 'Fridays'], ['5', 'Saturdays'], ['6', 'Sundays']];
+const DAY_WORDS = {'0123456': 'every day', '01234': 'weekdays', '56': 'weekends'};
+function describeSchedule(s) {
+  if (!s || !s.time) return '';
+  const days = DAY_WORDS[s.days] || s.days.split('').map(d => ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][+d]).join(', ');
+  return `${days} at ${s.time}`;
+}
+
 views.note = async (params, id) => {
-  const projects = await api('projects');
-  let note = {title: '', body: '', tags: [], project: params.get('project') || '', session: params.get('session') || ''};
+  const [projects, toolsData] = await Promise.all([api('projects'), api('tools').catch(() => ({tools: []}))]);
+  const runnable = toolsData.tools.filter(x => x.available && x.kind === 'terminal');
+  let note = {title: '', body: '', tags: [], project: params.get('project') || '', session: params.get('session') || '', runs: 0, schedule: {}};
   if (id !== 'new') {
     note = (await api('notes')).find(n => n.id === id);
     if (!note) { main.innerHTML = '<p class="empty">That note is gone.</p>'; return; }
@@ -977,6 +995,24 @@ views.note = async (params, id) => {
         ${note.id ? '<button type="button" class="danger" id="del">Delete</button>' : ''}
         <span class="muted small" id="saved"></span>
       </div>
+      <h2>As a prompt</h2>
+      <p class="muted small">A note can be a prompt you run again and again: by hand, from the composer, or on a schedule. It opens the tool in the project's folder with the brief on top.</p>
+      <div class="row small">
+        <label>Tool <select name="tool">${runnable.map(x => `<option value="${esc(x.name)}"${x.name === (note.tool || 'claude') ? ' selected' : ''}>${esc(x.label)}</option>`).join('') || '<option value="">none installed</option>'}</select></label>
+        <label>Model <input name="model" value="${esc(note.model || '')}" placeholder="default" style="width:150px"></label>
+        <label>Folder <input name="context" value="${esc(note.context || '')}" placeholder="the project's" style="width:220px"></label>
+      </div>
+      <div class="row small" style="margin-top:8px">
+        <label><input type="checkbox" name="scheduled"${note.schedule?.time ? ' checked' : ''}> On a schedule:</label>
+        <select name="days">${DAY_CHOICES.map(([v, l]) => `<option value="${v}"${(note.schedule?.days && (DAY_WORDS[note.schedule.days] === l || note.schedule.days === v)) ? ' selected' : ''}>${l}</option>`).join('')}</select>
+        at <input type="time" name="time" value="${esc(note.schedule?.time || '08:00')}">
+        <span class="muted">(local time; while promptloom is running)</span>
+      </div>
+      <div class="row small" style="margin-top:10px">
+        ${note.id ? `<button type="button" id="run"${runnable.length ? '' : ' disabled'}>Run as prompt now</button>
+        <a href="#/compose?note=${encodeURIComponent(note.id)}"><button type="button">Open in the composer</button></a>` : '<span class="muted">Save the note first.</span>'}
+        <span class="muted" id="runs">${note.runs ? `run ${note.runs} time${note.runs > 1 ? 's' : ''}, last ${ago(note.last_run)}${note.last_run_how ? ` (${esc(note.last_run_how)})` : ''}` : 'never run'}${note.next_run ? ` · next ${when(note.next_run)}` : ''}</span>
+      </div>
     </form>`;
   const form = $('#nf');
   const preview = () => { $('#preview').innerHTML = markdown(form.body.value) || '<span class="muted">Preview</span>'; };
@@ -987,7 +1023,9 @@ views.note = async (params, id) => {
     const saved = await api('notes', {
       id: note.id, title: form.title.value, body: form.body.value,
       tags: form.tags.value.split(/[,\s]+/).filter(Boolean), project: form.project.value,
-      session: note.session,
+      session: note.session, tool: form.tool.value, model: form.model.value.trim(),
+      context: form.context.value.trim(),
+      schedule: form.scheduled.checked ? {time: form.time.value, days: form.days.value} : {},
     });
     toast('Saved');
     if (!note.id) location.hash = `#/note/${encodeURIComponent(saved.id)}`;
@@ -997,6 +1035,13 @@ views.note = async (params, id) => {
   if (note.id) $('#del').onclick = async () => {
     await api('notes', {delete: note.id});
     location.hash = '#/notes';
+  };
+  if ($('#run')) $('#run').onclick = async () => {
+    try {
+      const done = await api('note-run', {id: note.id});
+      toast(`Opened ${done.tool}`);
+      views.note(params, id);
+    } catch (err) { toast(err.message); }
   };
 };
 
@@ -1191,6 +1236,14 @@ views.compose = async params => {
   // Picking a session up elsewhere, or starting from a suggested prompt.
   let seed = params.get('idea') || '';
   let seedContext = '';
+  const noteId = params.get('note') || '';
+  if (noteId) {
+    const note = (await api('notes').catch(() => [])).find(n => n.id === noteId);
+    if (note) {
+      seed = note.body;
+      seedContext = note.context || (await api('projects').catch(() => [])).find(p => p.name === note.project)?.contexts[0] || '';
+    }
+  }
   if (params.get('handoff')) {
     try {
       const h = await api(`handoff?key=${encodeURIComponent(params.get('handoff'))}&tool=${encodeURIComponent(params.get('tool') || '')}`);
@@ -1218,6 +1271,11 @@ views.compose = async params => {
         <textarea id="body" placeholder="What do you want done? Write it the way you'd say it; weave it afterwards if you want a second pair of eyes on it.">${esc(draft?.body || seed)}</textarea>
         <label class="toggle" style="margin-top:8px"><input type="checkbox" id="with-brief"${seed.includes('# About ') ? '' : ' checked'}> Put the project brief on top <span class="muted" id="brief-size"></span></label>
         <details id="brief-preview" hidden><summary class="small">The brief that will go on top</summary><pre class="prompt-box" id="brief-text"></pre></details>
+        <div class="hints" id="hints">
+          <div class="row small muted"><span class="grow">As you type: what your history says about it${t.weavers.length ? ', and a model\'s notes' : ''}</span>
+            ${t.weavers.length ? `<label class="toggle"><input type="checkbox" id="hints-on"${localStorage.getItem('pl.hints') === '1' ? ' checked' : ''}> model notes with <select id="hints-model">${t.weavers.map(w => `<option value="${esc(w.id)}"${w.id === (localStorage.getItem('pl.hintsModel') || t.weavers.find(x => /cheap|haiku|mini|flash/.test(x.label))?.id || weaver) ? ' selected' : ''}>${esc(w.label)}</option>`).join('')}</select></label>` : ''}</div>
+          <div id="tidbits"></div><div id="model-hints"></div>
+        </div>
         <div class="row small muted" id="status">${draft?.sent ? `Sent to ${esc(draft.sent_with)} ${ago(draft.sent)}.` : ''}</div>
         ${draft?.versions?.length ? `<details class="versions"><summary class="small">Woven ${draft.versions.length} time${draft.versions.length > 1 ? 's' : ''}</summary>
           ${draft.versions.slice().reverse().map((v, i) => `<div class="version">
@@ -1225,10 +1283,13 @@ views.compose = async params => {
             <div class="row small"><button data-restore="${draft.versions.length - 1 - i}">Put back what I had before this</button></div></div>`).join('')}</details>` : ''}
       </div>
       <div class="side">
-        <div class="field"><div class="label">Tool</div><div class="seg vertical">${installed.map(x =>
-          `<label title="${esc(x.program)}"><input type="radio" name="tool" value="${esc(x.name)}"${x.name === tool ? ' checked' : ''}>
-            <span class="grow">${esc(x.label)}</span>${x.gui ? '<span class="muted small">prompt copied</span>' : ''}</label>`).join('') ||
-          '<div class="small muted">No tool found. Install Claude Code, Codex, Copilot, Hermes or pi, or add one under [tools.agents].</div>'}</div>
+        <div class="field"><div class="label">Tool</div>
+          ${[['terminal', 'In a terminal, in the project'], ['app', 'Desktop apps'], ['web', 'In the browser'], ['gui', 'Editors (prompt copied)']].map(([kind, title]) => {
+            const group = installed.filter(x => x.kind === kind);
+            return group.length ? `<div class="small muted" style="margin:6px 0 2px">${title}</div><div class="seg vertical">${group.map(x =>
+              `<label title="${esc(x.program)}"><input type="radio" name="tool" value="${esc(x.name)}"${x.name === tool ? ' checked' : ''}>
+                <span class="grow">${esc(x.label)}</span>${x.clipboard ? '<span class="muted small">prompt copied</span>' : ''}</label>`).join('')}</div>` : '';
+          }).join('') || '<div class="small muted">No tool found. Install Claude Code, Codex, Copilot, Hermes or pi, or add one under [tools.agents].</div>'}
           ${t.tools.some(x => !x.available) ? `<div class="small muted" style="margin-top:4px">Not installed: ${t.tools.filter(x => !x.available).map(x => esc(x.label)).join(', ')}</div>` : ''}</div>
         <div class="field"><div class="label">Model <span class="muted">(blank: the tool's default)</span></div>
           <input id="model" list="models" value="${esc(model)}" placeholder="default">
@@ -1267,6 +1328,43 @@ views.compose = async params => {
   };
   loadBrief();
   const withBrief = () => $('#with-brief').checked && briefText ? briefText.trim() + '\n\n---\n\n' + body.value : body.value;
+  // Hints while typing: instant tidbits from the history, and (if switched on) a model's notes.
+  const KIND = {rule: 'You said', broke: 'Broke before', open: 'Still open', session: 'Related'};
+  let tidbitTimer = 0, hintTimer = 0, hintTurn = 0;
+  const showTidbits = async () => {
+    const text = body.value;
+    if (text.trim().length < 6) { $('#tidbits').innerHTML = ''; return; }
+    try {
+      const d = await api(`tidbits?context=${encodeURIComponent($('#context').value.trim())}&q=${encodeURIComponent(text.slice(-1500))}`);
+      $('#tidbits').innerHTML = d.items.map(i => `<div class="tidbit ${i.kind}"><span class="k">${KIND[i.kind]}</span>
+        ${i.kind === 'session' ? `<a href="${sessionHref(i.session)}">${esc(i.text)}</a> <span class="muted">${esc(i.project)} · ${i.words.map(esc).join(', ')}</span>${i.summary ? `<div class="muted">${esc(i.summary)}</div>` : ''}`
+          : `${esc(i.text)}${i.session ? ` <a class="muted" href="${sessionHref(i.session)}">↗</a>` : ''}`}</div>`).join('');
+    } catch { $('#tidbits').innerHTML = ''; }
+  };
+  const showHints = async () => {
+    const on = $('#hints-on');
+    if (!on || !on.checked || body.value.trim().length < 12) { if ($('#model-hints')) $('#model-hints').innerHTML = ''; return; }
+    const mine = ++hintTurn;
+    $('#model-hints').innerHTML = '<div class="tidbit thinking"><span class="k">Model</span>thinking…</div>';
+    try {
+      const h = await api('hints', {weaver: $('#hints-model').value, body: body.value, tool: form.tool(), context: form.context()});
+      if (mine !== hintTurn) return;
+      const rows = [...h.watch.map(x => ['watch', 'Careful', x]), ...h.decide.map(x => ['decide', 'Decide', x]), ...h.add.map(x => ['add', 'Worth adding', x])];
+      $('#model-hints').innerHTML = rows.map(([k, l, x]) => `<div class="tidbit ${k}"><span class="k">${l}</span>${esc(x)}</div>`).join('') || '<div class="tidbit muted"><span class="k">Model</span>nothing to add</div>';
+    } catch (err) {
+      if (mine === hintTurn) $('#model-hints').innerHTML = `<div class="tidbit muted"><span class="k">Model</span>${esc(err.message)}</div>`;
+    }
+  };
+  const queueHints = () => {
+    clearTimeout(tidbitTimer); clearTimeout(hintTimer);
+    tidbitTimer = setTimeout(showTidbits, 350);
+    hintTimer = setTimeout(showHints, 1800);
+  };
+  if ($('#hints-on')) {
+    $('#hints-on').onchange = e => { localStorage.setItem('pl.hints', e.target.checked ? '1' : '0'); queueHints(); };
+    $('#hints-model').onchange = e => { localStorage.setItem('pl.hintsModel', e.target.value); queueHints(); };
+  }
+  queueHints();
   const form = {
     tool: () => main.querySelector('input[name=tool]:checked')?.value || '',
     model: () => $('#model').value.trim(),
@@ -1307,7 +1405,7 @@ views.compose = async params => {
     return draft;
   };
   const queueSave = () => { clearTimeout(composeTimer); composeTimer = setTimeout(save, 700); $('#saved').textContent = 'typing…'; };
-  body.oninput = queueSave;
+  body.oninput = () => { queueSave(); queueHints(); };
   $('#model').oninput = queueSave;
   $('#context').oninput = queueSave;
   $('#save').onclick = async () => { clearTimeout(composeTimer); await save(); toast('Saved'); };
@@ -1348,10 +1446,12 @@ views.compose = async params => {
     try {
       await save();
       if (byName[form.tool()]?.gui) await navigator.clipboard.writeText(withBrief()).catch(() => {});
-      const done = await api('launch', {tool: form.tool(), prompt: withBrief(), model: form.model(), context: form.context(), draft: draft?.id});
+      const done = await api('launch', {tool: form.tool(), prompt: withBrief(), model: form.model(), context: form.context(), draft: draft?.id, note: noteId || undefined});
       $('#status').textContent = done.how === 'gui'
         ? `Opened ${done.tool} on ${done.dir}; the prompt is on your clipboard, paste it in.`
-        : `Opened ${done.tool} in a terminal in ${done.dir}.`;
+        : done.how === 'url'
+          ? (done.via_clipboard ? `Opened ${done.tool}; the prompt is on your clipboard (too long for a link), paste it in.` : `Opened ${done.tool} with the prompt filled in.`)
+          : `Opened ${done.tool} in a terminal in ${done.dir}.`;
       toast(`Opened ${done.tool}`);
       loadOverview().catch(() => {});
     } catch (err) {

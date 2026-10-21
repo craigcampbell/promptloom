@@ -250,6 +250,15 @@ textarea.body { width: 100%; min-height: 320px; font-family: var(--mono); font-s
 .compose .notes { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; margin-top: 8px; }
 .compose .versions { margin-top: 10px; }
 .compose .version { border-left: 3px solid var(--hidden-link); padding: 4px 10px; margin: 6px 0; }
+.hints { margin-top: 10px; }
+.tidbit { display: flex; gap: 8px; align-items: baseline; font-size: 13px; padding: 5px 10px; border-left: 3px solid var(--border); margin: 4px 0; background: var(--surface-1); border-radius: 0 6px 6px 0; }
+.tidbit .k { flex: none; width: 92px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
+.tidbit.rule { border-left-color: var(--accent); }
+.tidbit.broke, .tidbit.watch { border-left-color: var(--danger); }
+.tidbit.open { border-left-color: var(--s4); }
+.tidbit.decide { border-left-color: var(--hidden-link); }
+.tidbit.add { border-left-color: var(--s3); }
+.tidbit.thinking, .tidbit.muted { color: var(--text-muted); }
 .seg.vertical { flex-direction: column; align-items: stretch; }
 .seg.vertical label { display: flex; justify-content: flex-start; text-align: left; padding: 7px 10px; }
 .seg.vertical > * { margin-left: 0; margin-top: -1px; border-radius: 0; }
