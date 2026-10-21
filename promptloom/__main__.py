@@ -410,7 +410,8 @@ def cmd_app(args) -> int:
     except desktop.DesktopError as exc:
         print(f"promptloom: {exc}", file=sys.stderr)
         return 1
-    print({"webview": "opened in a window", "chrome": "opened in a window (app mode)",
+    print({"desktop": "opened the Promptloom app", "webview": "opened in a window",
+           "chrome": "opened in a window (app mode)",
            "browser": "opened in the browser"}[how] + f": {url}")
     return 0
 

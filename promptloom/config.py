@@ -30,7 +30,7 @@ ignore_contexts = []        # working directories whose sessions are never captu
 # own. It listens on this machine only.
 enabled = true
 port = 8765
-window = "auto"             # "auto", "webview" (pywebview), "chrome" (app mode) or "browser"
+window = "auto"             # "auto", "desktop" (the Promptloom app), "webview", "chrome", "browser"
 tray = true                 # Linux: an icon in the top bar (needs python3-gi; no log-out needed)
 
 # How to open a terminal window: the command, then the program to run in it.

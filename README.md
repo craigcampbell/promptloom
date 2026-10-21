@@ -105,13 +105,12 @@ sessions, tools and models:
 
 The screenshots use made-up projects from `scripts/demo.py`.
 
-A menu bar icon shows the session you are in, your recent sessions, and opens
-the app. On Linux it is a status notifier icon like Claude's or ChatGPT's
-(drawn by the AppIndicator extension GNOME ships with, so it appears at once;
-needs `python3-gi`), started by the daemon; `promptloom tray` starts it by
-hand. The GNOME Shell extension in `gnome-extension/` is the older way, with
-a quick-capture box, and only appears after logging out and in. On macOS it is
-a small native app.
+The desktop app puts Promptloom in the menu bar (macOS), the system tray
+(Windows) or the top bar (Linux): the session you are in, your recent
+sessions, and a way into every part of the app. Without the desktop app, the
+Python side has lighter stand-ins: on Linux a status notifier icon started by
+the daemon (`promptloom tray`) and the GNOME Shell extension in
+`gnome-extension/`; on macOS the small native menu bar app in `macos/`.
 
 ## Supported tools
 
@@ -178,7 +177,29 @@ a prompt for you to send. It never changes your prompts themselves.
 
 ## Install
 
-Needs Python 3.11+ and [uv](https://docs.astral.sh/uv/) (or pipx).
+Promptloom is two parts: the `promptloom` command (Python), which reads your
+tools' logs and serves the app, and the **desktop app** (`desktop/`, Electron),
+which is the window, the dock or taskbar icon and the menu bar / tray icon,
+the way Claude's or ChatGPT's apps are. The desktop app starts the command if
+nothing is serving, so the normal path is: install the command once, then use
+the app.
+
+**Desktop app**: download `Promptloom-<version>-mac-<arch>.dmg`,
+`Promptloom-<version>-win-x64.exe` or the Linux `.AppImage`/`.deb` from the
+[releases](https://github.com/craigcampbell/promptloom/releases) (built by CI
+on macOS, Windows and Linux), or build it yourself:
+
+```sh
+cd desktop && npm install && npm start        # run it
+cd desktop && npm run dist                    # installers for this platform, in desktop/dist
+```
+
+Closing the window leaves it in the menu bar / tray; the icon's menu has New
+prompt, Search, Stream, Threads, Pull requests (with how many need you), your
+recent sessions, and Quit. `promptloom://compose` and similar links open it on
+a page.
+
+**The command** needs Python 3.11+ and [uv](https://docs.astral.sh/uv/) (or pipx).
 
 ```sh
 git clone https://github.com/craigcampbell/promptloom
@@ -213,15 +234,12 @@ yet; reports welcome.
 **Elsewhere**, `uv tool install .` and run `promptloom watch` however you like
 to keep things running.
 
-### The app in a window
+### `promptloom app`
 
-`promptloom app` (and the launcher `install.sh` adds to the applications menu)
-shows the app in a window of its own rather than a browser tab, so it can sit
-in the dock like any other app. It uses, in order: [pywebview](https://pywebview.flowrl.com)
-if installed (`uv tool install --with pywebview --editable .`; on Linux it
-needs the system's PyGObject and WebKitGTK), a Chromium-family browser in app
-mode (Chrome, Chromium, Brave, Edge), or the default browser. `window` in the
-`[ui]` section of the config picks one.
+Opens the app in a window: the desktop app when it is installed, otherwise
+pywebview if installed, a Chromium-family browser in app mode, or the default
+browser, in that order. `window` in the `[ui]` section of the config picks
+one.
 
 `./uninstall.sh` removes the service, the menu bar item and the command, and
 leaves your captured history and config alone.

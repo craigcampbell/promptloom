@@ -156,14 +156,42 @@ def chromium() -> str:
     return ""
 
 
+DESKTOP_APPS = {
+    "darwin": ["/Applications/Promptloom.app", "~/Applications/Promptloom.app"],
+    "win32": ["~/AppData/Local/Programs/Promptloom/Promptloom.exe"],
+    "linux": ["promptloom-desktop", "/opt/Promptloom/promptloom-desktop",
+              "~/Applications/Promptloom.AppImage"],
+}
+
+
+def desktop_app() -> list[str]:
+    """How to start the installed desktop app (the Electron one), or []."""
+    key = "darwin" if sys.platform == "darwin" else "win32" if sys.platform == "win32" else "linux"
+    for item in DESKTOP_APPS[key]:
+        path = Path(item).expanduser()
+        if "/" in item and path.exists():
+            return ["open", "-a", str(path)] if key == "darwin" else [str(path)]
+        if "/" not in item and which(item):
+            return [item]
+    return []
+
+
 def open_window(cfg: dict, url: str) -> str:
     """Show the app in a window of its own. Returns how, for the caller to report.
 
-    First choice is pywebview (a native window; `uv tool install promptloom
-    --with pywebview`), then a Chromium-family browser in app mode, then the
-    default browser.
+    The desktop app (desktop/, an Electron app with a menu bar icon) comes
+    first when it is installed. Otherwise pywebview, then a Chromium-family
+    browser in app mode, then the default browser.
     """
     how = cfg.get("ui", {}).get("window", "auto")
+    page = url.split("#/", 1)[1] if "#/" in url else ""
+    if how in ("auto", "desktop"):
+        argv = desktop_app()
+        if argv:
+            spawn(argv + ([f"promptloom://{page}"] if page else []))
+            return "desktop"
+        if how == "desktop":
+            raise DesktopError("the Promptloom desktop app is not installed")
     if how in ("auto", "webview"):
         try:
             import webview  # noqa: F401
