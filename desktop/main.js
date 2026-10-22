@@ -161,6 +161,7 @@ function trayMenu() {
     {label: 'Search prompts', click: () => createWindow('search')},
     {label: 'Stream', click: () => createWindow('stream')},
     {label: 'Threads', click: () => createWindow('threads')},
+    {label: 'Tapestry', click: () => createWindow('tapestry')},
   );
   if (status.prs?.enabled) items.push({label: needs() ? `Pull requests (${needs()} need you)` : 'Pull requests', click: () => createWindow('prs')});
   const recent = (status.recent || []).filter(s => !active || s.key !== active.key).slice(0, 6);

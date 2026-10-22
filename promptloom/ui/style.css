@@ -246,6 +246,29 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-secondary); cursor: pointer; user-select: none; }
 
+/* the tapestry: threads woven into a cloth, in 3D */
+.tapestry { position: relative; height: calc(100vh - 190px); min-height: 460px; margin-top: 6px; }
+.tapestry canvas { width: 100%; height: 100%; display: block; background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius); cursor: grab; touch-action: none; }
+.tapestry canvas.grabbing { cursor: grabbing; }
+.tap-side, .tap-threads {
+  position: absolute; top: 10px; overflow: auto; padding: 10px 12px; font-size: 13px;
+  background: color-mix(in oklab, var(--surface-1) 88%, transparent); backdrop-filter: blur(8px);
+  border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.tap-side { right: 10px; width: 320px; max-height: calc(100% - 64px); }
+.tap-side h3 { margin: 4px 0; }
+.tap-side .text { white-space: pre-wrap; word-break: break-word; max-height: 40vh; overflow: auto; margin-top: 6px; }
+.tap-threads { left: 10px; width: 250px; max-height: 42%; font-size: 12px; }
+.tap-threads .t { display: flex; gap: 6px; align-items: center; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
+.tap-threads .t .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tap-threads .t:hover, .tap-threads .t.on { background: var(--surface-2); }
+.tap-threads .t.on { font-weight: 600; }
+.tap-scrub { position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; gap: 10px; align-items: center; }
+.tap-scrub input { flex: 1; padding: 0; background: none; border: none; accent-color: var(--accent); }
+.tap-scrub span { background: color-mix(in oklab, var(--surface-1) 85%, transparent); padding: 2px 8px; border-radius: 6px; white-space: nowrap; }
+.knot .grip { cursor: grab; color: var(--text-muted); font-size: 14px; line-height: 1; user-select: none; }
+.knot .grip:active { cursor: grabbing; }
+
 pre.prompt-box { white-space: pre-wrap; background: var(--surface-2); border-radius: 6px; padding: 10px 12px; font-family: var(--mono); font-size: 12px; margin: 8px 0; }
 textarea.body { width: 100%; min-height: 320px; font-family: var(--mono); font-size: 13px; }
 .note-view { line-height: 1.6; }
@@ -298,8 +321,7 @@ textarea.body { width: 100%; min-height: 320px; font-family: var(--mono); font-s
 .weave .day { position: relative; margin: 18px 0 8px; font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; }
 .weave .day::before { content: ""; position: absolute; left: -8px; right: 0; top: 50%; border-top: 1px dashed var(--border); z-index: -1; }
 .weave .day span { background: var(--bg); padding-right: 8px; }
-.knot { position: relative; margin: 6px 0; cursor: grab; }
-.knot:active { cursor: grabbing; }
+.knot { position: relative; margin: 6px 0; }
 .knot.dragging { opacity: .5; }
 .knot .time { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .knot .text { white-space: pre-wrap; word-break: break-word; margin: 4px 0; max-height: 7.5em; overflow: hidden; mask-image: linear-gradient(#000 80%, transparent); }
@@ -379,4 +401,8 @@ code { font-family: var(--mono); font-size: 12px; }
   .compose { grid-template-columns: 1fr; }
   .compose .side { position: static; }
   .graph-side { position: static; width: auto; margin-top: 10px; }
+  .tapestry { height: auto; min-height: 0; }
+  .tapestry canvas { height: 60vh; }
+  .tap-side, .tap-threads { position: static; width: auto; max-height: none; margin-top: 10px; backdrop-filter: none; }
+  .tap-scrub { position: static; margin-top: 10px; }
 }

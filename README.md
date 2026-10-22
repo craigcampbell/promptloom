@@ -31,6 +31,10 @@ sessions, tools and models:
   a project whose prompts share unusual words, close in time, are grouped
   with the drafts and pull requests for that folder, across tools and models.
   Rename, pin or close them.
+- **Tapestry**: the threads woven into one cloth, in 3D. Every prompt is a
+  bead on its project's strand, time runs left to right, and the cloth rises
+  where the work was busiest. Pick a thread to follow it bead by bead (arrow
+  keys, or let it walk), drag the slider to watch the history come together.
 - **Hand-offs**: from any session, "Continue in …" opens the composer with a
   prompt that picks the work up in another tool or model: what was done, the
   last things asked, what is open, and the brief.

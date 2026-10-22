@@ -295,6 +295,27 @@ class Handler(BaseHTTPRequestHandler):
             out.append(item)
         return out
 
+    def get_tapestry(self, q):
+        """Every thread with its prompts, compact, for the 3D view; the thread
+        asked for by id comes with its prompts' whole text."""
+        app = self.app
+        want = q.get("thread", "")
+        out = []
+        for thread in brief.threads(app.records(), app.web(), settings={"threads": app.user.threads}):
+            full = thread.id == want
+            sessions = []
+            for record in sorted(thread.sessions, key=lambda r: r.session.started or r.session.updated):
+                s = record.session
+                sessions.append({
+                    "key": s.key, "title": record.title, "harness": s.harness,
+                    "prompts": [{"i": i, "ts": p.ts, "model": p.model, "n": len(p.text),
+                                 "text": p.text if full else p.text[:160]}
+                                for i, p in enumerate(s.prompts)]})
+            out.append({"id": thread.id, "project": thread.project, "name": thread.name,
+                        "words": thread.words, "sessions": sessions,
+                        "pinned": bool(app.user.threads.get(thread.id, {}).get("pinned"))})
+        return {"threads": out}
+
     def get_handoff(self, q):
         """A prompt that continues a session elsewhere, for the composer."""
         record = self.app.store.records.get(q.get("key", ""))

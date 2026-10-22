@@ -198,6 +198,16 @@ def test_http_api_reads_and_writes(http):
         assert b"Promptloom" in res.read()
 
 
+def test_http_tapestry(http):
+    threads = call(http + "/api/tapestry")["threads"]
+    prompts = [p for t in threads for s in t["sessions"] for p in s["prompts"]]
+    assert len(prompts) == 3
+    assert all(p["ts"] and "n" in p and "model" in p for p in prompts)
+    one = threads[0]
+    full = call(http + f"/api/tapestry?thread={one['id']}")["threads"]
+    assert any(t["id"] == one["id"] for t in full)
+
+
 def test_http_api_refuses_other_sites(http):
     with pytest.raises(urllib.error.HTTPError) as err:
         call(http + "/api/notes", {"title": "x"}, {"Origin": "https://evil.example"})

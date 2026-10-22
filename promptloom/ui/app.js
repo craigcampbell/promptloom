@@ -196,11 +196,44 @@ function markdown(src) {
   return out.join('\n');
 }
 
-// Clicking into a filled search box selects what is there, so typing replaces it.
+// Tabbing into a filled search box selects what is there, so typing replaces
+// it. A click leaves the caret where it landed, as in any other box.
+let focusByPointer = false;
+document.addEventListener('pointerdown', () => { focusByPointer = true; }, true);
+document.addEventListener('keydown', () => { focusByPointer = false; }, true);
 document.addEventListener('focusin', e => {
   const el = e.target;
-  if (el.matches('input[type=search], .search input, input[list]') && el.value) el.select();
+  if (!focusByPointer && el.matches('input[type=search], .search input, input[list]') && el.value) el.select();
+  focusByPointer = false;
 });
+
+// A question with a text answer. The desktop app (Electron) has no
+// window.prompt, so it gets a dialog of its own. Resolves null when cancelled.
+function ask(title, value = '') {
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'dialog';
+    dlg.innerHTML = `<form><h2>${esc(title)}</h2><input name="v" value="${esc(value)}" style="width:100%">
+      <div class="row" style="margin-top:12px;justify-content:flex-end"><button type="button" data-cancel>Cancel</button><button class="primary">OK</button></div></form>`;
+    document.body.append(dlg);
+    const input = $('input', dlg);
+    let answer = null;
+    $('[data-cancel]', dlg).onclick = () => dlg.close();
+    $('form', dlg).onsubmit = e => { e.preventDefault(); answer = input.value; dlg.close(); };
+    dlg.addEventListener('close', () => { dlg.remove(); resolve(answer); });
+    dlg.showModal();
+    input.select();
+  });
+}
+
+// A card that can be dragged (a prompt in the stream) still has to let its
+// text be selected and its boxes typed in: it is only draggable when the
+// press starts outside those.
+function dragFrom(el) {
+  el.addEventListener('pointerdown', e => {
+    el.draggable = !e.target.closest('input, textarea, button, a, select, [data-expand], .noteform');
+  });
+}
 
 // state shared between views
 
@@ -348,12 +381,16 @@ views.search = async params => {
     ` <input type="date" data-filter="after" title="after"> to <input type="date" data-filter="before" title="before">`;
   for (const el of document.querySelectorAll('[data-filter]')) {
     el.onchange = () => {
-      if (!el.value) return;
-      const v = /\s/.test(el.value) ? `"${el.value}"` : el.value;
-      // Replace a filter of the same kind rather than piling them up.
+      // Replace a filter of the same kind rather than piling them up; "any"
+      // takes that kind out again.
       const kept = form.q.value.trim().split(/\s+/).filter(w => w && !w.startsWith(el.dataset.filter + ':'));
-      location.hash = searchHref([...kept, `${el.dataset.filter}:${v}`].join(' '));
+      const v = /\s/.test(el.value) ? `"${el.value}"` : el.value;
+      location.hash = searchHref([...kept, ...(v ? [`${el.dataset.filter}:${v}`] : [])].join(' '));
     };
+  }
+  for (const [, kind, value] of q.matchAll(/(\w+):("[^"]*"|\S+)/g)) {
+    const el = $(`[data-filter="${kind}"]`);
+    if (el) el.value = value.replace(/^"|"$/g, '');
   }
   if (q) $('#filters').insertAdjacentHTML('beforeend', ' <a href="#/search" class="small">clear</a>');
   if (!q) {
@@ -1074,7 +1111,9 @@ views.note = async (params, id) => {
   };
 };
 
-// routing
+// the tapestry (tapestry.js): every thread woven into one cloth, in 3D
+
+views.tapestry = params => tapestryView(params);
 
 // threads
 
@@ -1084,7 +1123,7 @@ views.threads = async params => {
   const have = tools.tools.filter(x => x.available);
   const openId = params.get('open');
   main.innerHTML = `
-    <h1>Threads</h1>
+    <div class="row"><h1 class="grow">Threads</h1><a href="#/tapestry"><button>See them woven, in 3D</button></a></div>
     <p class="muted">Lines of work, across tools and models: sessions in a project whose prompts share the same unusual words, close in time, with the drafts and pull requests for that folder. Rename, pin or close them.</p>
     <div class="list">${threads.map(t => `<details class="item thread" data-thread="${esc(t.id)}"${t.id === openId ? ' open' : ''}>
       <summary><div class="row"><span class="grow"><strong>${t.pinned ? '📌 ' : ''}${esc(t.name)}</strong> <span class="muted small">${esc(t.project)} · ${t.sessions.length} session${t.sessions.length > 1 ? 's' : ''} · ${ago(t.updated)}</span></span>
@@ -1092,6 +1131,7 @@ views.threads = async params => {
       <div class="body">
         ${t.words.length ? `<div class="chips">${t.words.map(w => `<span class="chip" data-tag="${esc(w)}">${esc(w)}</span>`).join('')}</div>` : ''}
         <div class="row small" style="margin:8px 0">
+          <a href="#/tapestry?thread=${encodeURIComponent(t.id)}"><button title="Follow it bead by bead in 3D">In the tapestry</button></a>
           <button data-rename="${esc(t.id)}">Rename</button>
           <button data-pin="${esc(t.id)}">${t.pinned ? 'Unpin' : 'Pin'}</button>
           <button data-close="${esc(t.id)}">Close</button>
@@ -1104,9 +1144,9 @@ views.threads = async params => {
           <div class="meta">${toolChip(s.harness)} ${s.prompts} prompts · ${ago(s.updated)}</div>${s.summary ? `<div class="small">${esc(s.summary)}</div>` : ''}</div>`).join('')}</div>
       </div></details>`).join('') || '<p class="empty">Nothing yet.</p>'}</div>`;
   const set = async (id, body) => { await api('thread', {id, ...body}); views.threads(params); };
-  main.querySelectorAll('[data-rename]').forEach(b => { b.onclick = () => {
-    const name = prompt('Name this thread', b.closest('.thread').querySelector('strong').textContent.replace(/^📌 /, ''));
-    if (name !== null) set(b.dataset.rename, {name});
+  main.querySelectorAll('[data-rename]').forEach(b => { b.onclick = async () => {
+    const name = await ask('Name this thread', b.closest('.thread').querySelector('strong').textContent.replace(/^📌 /, ''));
+    if (name !== null && name.trim()) set(b.dataset.rename, {name: name.trim()});
   }; });
   main.querySelectorAll('[data-pin]').forEach(b => { b.onclick = () => set(b.dataset.pin, {pinned: b.textContent === 'Pin'}); });
   main.querySelectorAll('[data-close]').forEach(b => { b.onclick = () => { if (confirm('Close this thread? Its sessions stay; it just leaves the list.')) set(b.dataset.close, {closed: true}); }; });
@@ -1166,7 +1206,7 @@ function openPalette() {
   dlg.innerHTML = `<input placeholder="Search prompts, or jump to a project, thread, session or page…" autofocus><div class="results"></div>`;
   document.body.append(dlg);
   const input = $('input', dlg), results = $('.results', dlg);
-  const pages = [['Loom', '#/'], ['Threads', '#/threads'], ['Projects', '#/projects'], ['Drafts', '#/drafts'],
+  const pages = [['Loom', '#/'], ['Threads', '#/threads'], ['Tapestry', '#/tapestry'], ['Projects', '#/projects'], ['Drafts', '#/drafts'],
     ['Pull requests', '#/prs'], ['Tools', '#/tools'], ['Models', '#/models'], ['Graph', '#/graph'],
     ['Connections', '#/connections'], ['Notes', '#/notes'], ['Worktrees', '#/worktrees'], ['New prompt', '#/compose']];
   let items = [], selected = 0, turn = 0;
@@ -1265,7 +1305,7 @@ function knot(i, threads, collections) {
   const thread = threads[i.key];
   const byId = Object.fromEntries(collections.map(c => [c.id, c]));
   return `<div class="item knot" draggable="true" data-ref="${esc(i.ref)}" data-key="${esc(i.key)}" data-project="${esc(i.project)}" data-harness="${esc(i.harness)}" data-thread="${esc(thread?.id || i.key)}">
-    <div class="row small"><span class="time">${new Date(i.ts).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</span>
+    <div class="row small"><span class="grip" title="Drag this prompt onto a tag, a collection or a text box">⠿</span><span class="time">${new Date(i.ts).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</span>
       <a href="${projectHref(i.project)}" style="color:${projectColor(i.project)};font-weight:600">${esc(i.project)}</a>
       ${toolChip(i.harness)}${i.model ? chip('model:' + i.model) : ''}
       <span class="muted">· <a href="${sessionHref(i.key)}#p${i.index}">${esc(i.title)}</a></span>
@@ -1336,7 +1376,13 @@ views.stream = async (params, asHome = false) => {
     </div>
     <div class="row" style="margin-top:14px"><button id="more" hidden>Load more</button><span class="muted small" id="count"></span></div>`;
   wireHomeSwitch();
-  $('#sq').onsubmit = e => { e.preventDefault(); location.hash = `#/${asHome ? '' : 'stream'}?q=${encodeURIComponent(e.target.q.value.trim())}`; if (asHome) views.stream(new URLSearchParams({q: e.target.q.value.trim()}), true); };
+  $('#sq').onsubmit = e => {
+    e.preventDefault();
+    const next = `#/${asHome ? '' : 'stream'}?q=${encodeURIComponent(e.target.q.value.trim())}`;
+    // The route draws the page again; only when the hash is already there would it not.
+    if (location.hash === next) views.stream(new URLSearchParams({q: e.target.q.value.trim()}), asHome);
+    else location.hash = next;
+  };
   main.querySelectorAll('[data-mode]').forEach(b => { b.onclick = () => { streamMode = b.dataset.mode; localStorage.setItem('pl.streamMode', streamMode); main.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('on', x === b)); drawThreads($('#weave')); }; });
 
   let data = first, items = [];
@@ -1386,9 +1432,11 @@ views.stream = async (params, asHome = false) => {
     weave.querySelectorAll('.knot').forEach(el => {
       const ref = el.dataset.ref;
       const item = items.find(i => i.ref === ref);
+      dragFrom(el);
       el.ondragstart = e => { e.dataTransfer.setData('application/x-promptloom-ref', ref); e.dataTransfer.setData('text/plain', item.text); e.dataTransfer.effectAllowed = 'copyLink'; el.classList.add('dragging'); };
       el.ondragend = () => el.classList.remove('dragging');
-      el.querySelector('[data-expand]').onclick = e => { e.currentTarget.classList.toggle('open'); drawThreads(weave); };
+      // A click unfolds the prompt; a drag across it to select words does not.
+      el.querySelector('[data-expand]').onclick = e => { if (getSelection().toString()) return; e.currentTarget.classList.toggle('open'); drawThreads(weave); };
       const input = el.querySelector('[data-addtag]');
       input.onkeydown = async e => {
         if (e.key !== 'Enter') return;
@@ -1487,12 +1535,13 @@ views.collections = async params => {
   main.querySelectorAll('[data-col]').forEach(el => {
     const id = el.dataset.col;
     const col = cols.find(c => c.id === id);
-    el.querySelector('[data-rename]').onclick = () => { const name = prompt('Name', col.name); if (name) api('collections', {id, name}).then(() => views.collections(params)); };
+    el.querySelector('[data-rename]').onclick = async () => { const name = await ask('Name this collection', col.name); if (name && name.trim()) api('collections', {id, name: name.trim()}).then(() => views.collections(params)); };
     el.querySelectorAll('[data-color]').forEach(b => { b.onclick = () => api('collections', {id, color: b.dataset.color}).then(() => views.collections(params)); });
     el.querySelector('[data-del]').onclick = () => { if (confirm(`Delete “${col.name}”? The prompts stay in your history.`)) api('collections', {delete: id}).then(() => views.collections(params)); };
     el.querySelectorAll('[data-out]').forEach(b => { b.onclick = () => api('collect', {id, ref: b.dataset.out, remove: true}).then(() => views.collections(params)); });
     el.querySelectorAll('.knot').forEach(k => {
       const item = col.items.find(i => i.ref === k.dataset.ref);
+      dragFrom(k);
       k.ondragstart = e => { e.dataTransfer.setData('application/x-promptloom-ref', item.ref); e.dataTransfer.setData('text/plain', item.text); };
       k.querySelector('[data-reuse]').onclick = () => { location.hash = `#/compose?idea=${encodeURIComponent(item.text)}`; };
     });
