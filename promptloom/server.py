@@ -180,6 +180,17 @@ class Handler(BaseHTTPRequestHandler):
 
     # reading
 
+    def get_glean(self, q):
+        from . import glean
+        cfg = config.load()
+        out = {"configured": glean.configured(cfg), "hits": []}
+        if q.get("q") and out["configured"]:
+            try:
+                out["hits"] = glean.search(q["q"], int(q.get("limit") or 10), cfg)
+            except glean.GleanError as exc:
+                out["error"] = str(exc)
+        return out
+
     def get_overview(self, q):
         app = self.app
         records = app.records()

@@ -70,6 +70,14 @@ terminal = []               # how to open a terminal, e.g. ["gnome-terminal", "-
 # review = ["claude", "-p", "--model", "opus"]
 # fix = ["claude", "{prompt}"]
 
+[glean]
+# Search your company's knowledge from promptloom: `promptloom glean login`
+# (browser sign-in), then `promptloom glean QUERY`, the app's /api/glean and the
+# MCP tool glean_search. `glean set --url X --token T` uses an API token instead.
+url = ""                    # "" = the one the Glean desktop app is signed in to; or "acme", a full URL
+auth_type = ""              # "OAUTH" for user-scoped OAuth tokens
+actas = ""                  # email to search as, for global API tokens
+
 [enrich]
 # `promptloom provider set <name>` switches summaries to a hosted provider with
 # your API key and overrides backend, provider and model here.
@@ -99,6 +107,14 @@ enabled = true
 [harness.copilot]
 enabled = true              # GitHub Copilot Chat in VS Code
 # root = "~/.config/Code/User/workspaceStorage"
+
+[harness.copilot-cli]
+enabled = true              # GitHub Copilot CLI
+# root = "~/.copilot/session-state"
+
+[harness.cursor]
+enabled = true              # Cursor agent chats
+# root = "~/.cursor/projects"
 
 [harness.hermes]
 enabled = true

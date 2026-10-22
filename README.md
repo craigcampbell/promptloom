@@ -118,6 +118,8 @@ the daemon (`promptloom tray`) and the GNOME Shell extension in
 | --- | --- | --- |
 | Claude Code | `~/.claude/projects` | yes |
 | Codex (CLI and desktop) | `~/.codex/sessions` | yes |
+| GitHub Copilot CLI | `~/.copilot/session-state` | yes |
+| Cursor agent chats | `~/.cursor/projects/*/agent-transcripts` | no |
 | GitHub Copilot Chat in VS Code | VS Code's `workspaceStorage/*/chatSessions` | yes |
 | Hermes | `~/.hermes/state.db` | when recorded |
 | Anything that writes JSON lines | a few lines of config | if it logs one |
@@ -126,6 +128,15 @@ the daemon (`promptloom tray`) and the GNOME Shell extension in
 Claude Code and Codex have been run against real logs. The Copilot and Hermes
 adapters follow those tools' storage formats and are tested on synthetic files;
 reports from real installs are welcome.
+
+### Glean
+
+`promptloom glean login` opens your browser to sign in to Glean (no API token
+needed; the instance is found from the Glean desktop app, or pass `--url
+acme`). Then `promptloom glean WORDS` searches it, `/api/glean?q=WORDS` serves
+it to the app, and the MCP tool `glean_search` lets any assistant ask it.
+If your Glean has no browser sign-in for third-party apps, an API token works
+too: `promptloom glean set --url acme --token TOKEN`.
 
 ### Sending prompts from other tools
 

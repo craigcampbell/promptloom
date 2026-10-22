@@ -75,6 +75,21 @@ install_macos() {
     launchctl bootout "$domain/$label" 2>/dev/null || true
     launchctl bootstrap "$domain" "$agent"
 
+    # The Electron desktop app (window plus menu bar icon) replaces the small
+    # Swift menu bar app. Both are named Promptloom, so installing both makes
+    # them overwrite and kill each other.
+    local electron_app=""
+    for candidate in /Applications/Promptloom.app "$HOME/Applications/Promptloom.app"; do
+        if [[ -d "$candidate/Contents/Frameworks/Electron Framework.framework" ]]; then
+            electron_app="$candidate"
+            break
+        fi
+    done
+    if [[ -n "$electron_app" ]]; then
+        echo "== desktop app found at $electron_app; skipping the Swift menu bar app"
+        return
+    fi
+
     echo "== menu bar app"
     if ! command -v swiftc >/dev/null; then
         echo "swiftc not found. Install the Xcode Command Line Tools with"

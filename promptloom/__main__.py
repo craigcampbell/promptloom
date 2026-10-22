@@ -499,6 +499,50 @@ def cmd_search(args) -> int:
     return 0
 
 
+def cmd_glean(args) -> int:
+    from . import glean
+
+    words = args.query
+    if words and words[0] in ("login", "logout"):
+        if words[0] == "logout":
+            print("Signed out of Glean." if glean.logout() else "Not signed in.")
+            return 0
+        try:
+            url = glean.login(args.url or "")
+        except glean.GleanError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        print(f"Signed in to {url}. Try: promptloom glean YOUR QUERY")
+        return 0
+    if words and words[0] == "set":
+        if not (args.url or args.token):
+            print("usage: promptloom glean set --url COMPANY --token TOKEN", file=sys.stderr)
+            return 1
+        glean.save(args.url or "", args.token or "")
+        print("Glean saved. Try: promptloom glean YOUR QUERY")
+        return 0
+    if not glean.configured():
+        print("Glean is not set up: run  promptloom glean login", file=sys.stderr)
+        return 1
+    if not words:
+        print("Glean is set up. Search with: promptloom glean WORDS")
+        return 0
+    try:
+        hits = glean.search(" ".join(words), args.limit)
+    except glean.GleanError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(hits, indent=2, ensure_ascii=False))
+        return 0
+    for hit in hits:
+        print(f"{hit['title']}  [{hit['source'] or hit['type']}]\n    {hit['url']}")
+        if hit["snippet"]:
+            print(f"    {hit['snippet']}")
+    print(f"{len(hits)} results")
+    return 0
+
+
 def cmd_mcp(args) -> int:
     from . import mcp
 
@@ -704,6 +748,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, default=30)
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_search)
+
+    p = sub.add_parser("glean", help="search your company's Glean: `glean login`, then `glean WORDS`")
+    p.add_argument("query", nargs="*")
+    p.add_argument("--url", help="Glean instance name or backend URL (with `set`)")
+    p.add_argument("--token", help="Glean API token (with `set`)")
+    p.add_argument("--limit", type=int, default=10)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_glean)
 
     p = sub.add_parser("log", help="record a prompt from any tool or script")
     p.add_argument("text", nargs="*", help="the prompt (or on stdin)")

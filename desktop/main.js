@@ -107,6 +107,15 @@ function createWindow(page = '') {
     webPreferences: {preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true},
   });
   win.once('ready-to-show', () => win.show());
+  // The hidden title bar puts the window buttons over the page's top bar: make
+  // room for them and let the bar drag the window.
+  if (IS_MAC) {
+    win.webContents.on('dom-ready', () => win.webContents.insertCSS(`
+      header.top { padding-left: 84px !important; -webkit-app-region: drag; }
+      header.top a, header.top button, header.top summary, header.top input,
+      header.top .palette-trigger, header.top nav { -webkit-app-region: no-drag; }
+    `));
+  }
   win.loadURL(BASE + (page ? '#/' + page : ''));
   // Links to other sites open in the browser; the app stays on its own pages.
   win.webContents.setWindowOpenHandler(({url}) => { shell.openExternal(url); return {action: 'deny'}; });

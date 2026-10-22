@@ -20,6 +20,14 @@ PROTOCOL = "2025-06-18"
 
 TOOLS = [
     {
+        "name": "glean_search",
+        "description": "Search the user's company knowledge in Glean (documents, chats, "
+                       "tickets). Needs `promptloom glean set` to have been run.",
+        "inputSchema": {"type": "object", "properties": {
+            "query": {"type": "string"},
+            "limit": {"type": "integer", "default": 8}}, "required": ["query"]},
+    },
+    {
         "name": "search_prompts",
         "description": "Search every prompt the user has typed into any AI coding tool, and "
                        "their notes. Words must all match. Filters can go in the query: "
@@ -132,6 +140,14 @@ class Tools:
         self.store.load()
         self.user.load()
         return self.store.by_recency()
+
+    def glean_search(self, query: str, limit: int = 8):
+        from . import glean
+        hits = glean.search(query, limit)
+        if not hits:
+            return "no results in Glean"
+        return "\n".join(f"- {h['title']} ({h['source'] or h['type'] or 'glean'}) {h['url']}"
+                         + (f"\n  {h['snippet']}" if h["snippet"] else "") for h in hits)
 
     def search_prompts(self, query: str, limit: int = 20):
         result = analysis.search(self._load(), self.user, query, max(1, min(limit, 100)))

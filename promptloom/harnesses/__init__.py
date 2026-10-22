@@ -11,12 +11,14 @@ from .base import Harness, JsonlHarness
 from .claude_code import ClaudeCode
 from .codex import Codex
 from .copilot import Copilot
+from .copilot_cli import CopilotCli
+from .cursor import Cursor
 from .generic import GenericJsonl
 from .hermes import Hermes
 
 __all__ = ["Harness", "JsonlHarness", "build", "types"]
 
-_BUILTIN = [ClaudeCode, Codex, Copilot, Hermes, GenericJsonl, Api]
+_BUILTIN = [ClaudeCode, Codex, Copilot, CopilotCli, Cursor, Hermes, GenericJsonl, Api]
 
 
 def _subclasses(cls):
